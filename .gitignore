@@ -1,0 +1,35 @@
+.gradle/
+build/
+bin/
+out/
+*.class
+*.jar
+*.war
+*.log
+.idea/
+*.iml
+.settings/
+.project
+.classpath
+node_modules/
+dist/
+*.tgz
+.DS_Store
+Thumbs.db
+
+# 例外：Gradle Wrapper 的引导 jar 必须入库，否则克隆后 ./gradlew 无法引导 Gradle
+!gradle/wrapper/gradle-wrapper.jar
+
+# AI 工作目录：含开发笔记与本地环境信息，不进入仓库
+.workbuddy-ai/
+.workbuddy/
+
+# 临时工作区：验证脚本与一次性分析产物（如审查输出），不进入仓库
+workplace/
+
+# 市场展示素材：体积较大且不进入公开仓库，仅本地留存
+# 插件图标 dan.svg 的源文件在此，需自行托管到 https://wuqishi.com/dan.svg
+assets/
+
+# 开发文档：本地参考用，不进入公开仓库（PRD / DEVELOPMENT / AGENTS）
+docs/

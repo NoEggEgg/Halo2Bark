@@ -1,0 +1,342 @@
+apiVersion: v1alpha1
+kind: Setting
+metadata:
+  name: halo2bark-settings
+spec:
+  forms:
+    # 表单结构硬规则（违反任一条都会静默失效、控制台无报错）：
+    # 1. 每个顶层字段显式声明唯一的 id —— 否则 FormKit 自行生成内部 id，结构相近的节点会互相覆盖。
+    # 2. 被 if 中 $get(...) 引用的字段必须声明 id —— $get 按 id 解析，不是按 name。
+    # 3. 被引用的开关必须声明在使用方之前 —— $get 只能解析已存在的节点。
+    # 4. 带 if 的字段必须额外声明 key —— 否则「初始加载时条件即为真」会导致节点未正确创建、值静默丢失。
+    # 注：array 的子字段不要声明 id，同一数组的多个项会共享 id 而冲突。
+    - group: push
+      label: 推送配置
+      formSchema:
+        # ── 接收设备（必填项，置于最前）──
+        - $formkit: array
+          name: devices
+          id: devices
+          label: 接收设备
+          value: []
+          addLabel: 添加设备
+          max: 20
+          emptyText: 尚未添加接收设备。点击下方「添加设备」，填入 Bark App 首页复制的设备 Key，即可开始接收推送。
+          help: 最多 20 台。Bark 服务地址默认官方服务，使用自建服务时填自己的完整地址（不含末尾斜杠、查询串或 user:pass@）
+          itemLabels:
+            - type: text
+              label: $value.name
+          children:
+            - $formkit: text
+              name: name
+              label: 设备名称
+              validation: required
+              help: 用于在通知与日志中区分设备
+            - $formkit: secret
+              name: key
+              label: 设备 Key
+              validation: required
+              descriptionPreset: Halo2Bark 设备密钥
+              requiredKeys:
+                - key: key
+                  help: 在 Bark App 首页复制的设备 Key
+              help: 点「创建密钥」粘贴 Bark App 首页复制的设备 Key。密钥内容由 Halo 存放在 Secret 中，插件配置只保存引用
+            - $formkit: text
+              name: serverUrl
+              label: Bark 服务地址
+              value: "https://api.day.app"
+              validation: required
+              help: 该设备所属的 Bark 服务端。官方服务保持默认，自建服务填完整地址（不含末尾斜杠、查询串或 user:pass@）——插件会在其后拼接 /info 与 /push
+            - $formkit: checkbox
+              name: enabled
+              label: 启用
+              value: true
+            - $formkit: verificationForm
+              action: /apis/console.api.bark.wuqishi.com/v1alpha1/bark/test
+              label: 测试该设备
+
+        # ── 通知标识 ──
+        - $formkit: text
+          name: group
+          id: group
+          label: 通知分组
+          value: ""
+          help: 在 Bark App 内按分组查看通知。留空则使用站点名称；站点名称读取失败时回退 Halo
+
+        # ── 外观与提示 ──
+        - $formkit: text
+          name: icon
+          id: icon
+          label: 默认图标 URL
+          help: 通知左侧显示的图标。请使用正方形 PNG（128×128 以上），JPEG 亦可。不支持 SVG（iOS 不解码矢量图）、WebP、AVIF —— 这三种都会退回 Bark 默认图标。留空时使用站点 Logo，若站点 Logo 为 SVG 同样会退回默认图标
+        - $formkit: text
+          name: sound
+          id: sound
+          label: 默认提示音
+          placeholder: 例如 minuet
+          help: 填 Bark App 的铃声名称，留空使用默认铃声，名称不存在时回退到默认提示音。可选示例：alarm、bell、chime、glass、horn、minuet、newmail、newsflash、telegraph、typewriters、update、silence
+        - $formkit: checkbox
+          name: badgeEnabled
+          id: badgeEnabled
+          label: App 角标
+          value: false
+          help: 开启后按下方数字设置 App 图标角标
+        - $formkit: number
+          name: badge
+          id: badge
+          key: badge
+          label: App 角标数字
+          if: $get(badgeEnabled).value
+          help: 直接设置为该数字，不会在原有数字上累加；填 0 会清除角标
+
+        # ── 通知级别（决定打扰强度）──
+        - $formkit: select
+          name: interactiveLevel
+          id: interactiveLevel
+          label: 互动类事件级别
+          value: timeSensitive
+          help: 适用于新评论 / 新回复 / 评论待审核。普通＝亮屏提示，时效性＝专注模式可见，重要警告＝忽略免打扰，静默＝不亮屏
+          options:
+            - label: 普通（亮屏提示）
+              value: active
+            - label: 时效性（专注模式可见）
+              value: timeSensitive
+            - label: 重要警告（忽略免打扰）
+              value: critical
+            - label: 静默（不亮屏）
+              value: passive
+        - $formkit: select
+          name: normalLevel
+          id: normalLevel
+          label: 普通类事件级别
+          value: active
+          help: 适用于文章发布 / 新用户注册 / 文章删除取消发布。普通＝亮屏提示，时效性＝专注模式可见，重要警告＝忽略免打扰，静默＝不亮屏
+          options:
+            - label: 普通
+              value: active
+            - label: 时效性
+              value: timeSensitive
+            - label: 重要警告
+              value: critical
+            - label: 静默
+              value: passive
+        - $formkit: checkbox
+          name: securityCall
+          id: securityCall
+          label: 安全事件响铃 30 秒
+          value: true
+          disabled: true
+          help: 新设备登录固定为「重要警告」级别，会忽略静音与免打扰，且不受静默时段影响。此项固定开启，不可修改
+        - $formkit: number
+          name: volume
+          id: volume
+          key: volume
+          label: critical 告警音量
+          if: $get(securityCall).value
+          min: 0
+          max: 10
+          help: 仅「重要警告」生效，取值 0–10；留空使用系统默认
+
+        # ── 归档 ──
+        - $formkit: checkbox
+          name: archiveEnabled
+          id: archiveEnabled
+          label: 消息归档
+          value: true
+          help: 开启后通知可在 Bark App 内回看，无需自建通知历史
+        - $formkit: select
+          name: archiveTtl
+          id: archiveTtl
+          key: archiveTtl
+          label: 归档保留时长
+          if: $get(archiveEnabled).value
+          value: "7d"
+          help: 通知在 Bark App 归档中的保留时长
+          options:
+            - label: 1 天
+              value: 1d
+            - label: 7 天
+              value: 7d
+            - label: 30 天
+              value: 30d
+            - label: 永久
+              value: "0"
+
+        # ── 点击与复制 ──
+        - $formkit: select
+          name: action
+          id: action
+          label: 点击通知跳转
+          value: "url"
+          help: 点击通知时的行为。「不跳转」适合纯提醒场景
+          options:
+            - label: 跳转链接
+              value: "url"
+            - label: 不跳转
+              value: "none"
+        - $formkit: checkbox
+          name: autoCopy
+          id: autoCopy
+          label: 自动复制内容
+          value: false
+          help: 收到通知后自动复制到剪贴板
+        - $formkit: text
+          name: copy
+          id: copy
+          key: copy
+          label: 复制内容
+          if: $get(autoCopy).value
+          help: 留空则复制通知正文
+
+        # ── 降噪 ──
+        - $formkit: number
+          name: contentMaxLength
+          id: contentMaxLength
+          label: 内容长度上限
+          value: 200
+          min: 50
+          max: 500
+          help: 通知正文超过此长度会截断并补省略号，取值 50–500
+        - $formkit: select
+          name: mergeWindow
+          id: mergeWindow
+          label: 合并窗口
+          value: 2m
+          help: 同一类事件在此窗口内累计 3 条以上时，合并为一条摘要，避免评论爆发时刷屏
+          options:
+            - label: 1 分钟
+              value: 1m
+            - label: 2 分钟
+              value: 2m
+            - label: 5 分钟
+              value: 5m
+        - $formkit: checkbox
+          name: quietHoursEnabled
+          id: quietHoursEnabled
+          label: 启用静默时段
+          value: false
+          help: 该时段内互动类与普通类通知暂存，时段结束后合并发送；安全事件始终立即送达
+        - $formkit: text
+          name: quietHoursFrom
+          id: quietHoursFrom
+          key: quietHoursFrom
+          label: 静默开始
+          if: $get(quietHoursEnabled).value
+          value: "23:00"
+          help: 24 小时制，如 23:00；支持跨天（开始晚于结束即视为跨天）
+        - $formkit: text
+          name: quietHoursTo
+          id: quietHoursTo
+          key: quietHoursTo
+          label: 静默结束
+          if: $get(quietHoursEnabled).value
+          value: "07:00"
+          help: 24 小时制，如 07:00
+
+        # ── 加密 ──
+        - $formkit: checkbox
+          name: encryptEnabled
+          id: encryptEnabled
+          label: 启用加密推送
+          value: false
+          help: 开启后正文加密传输，Bark 服务端无法解密。以下参数需与 Bark App 首页 → 推送加密 → 加密设置 中完全一致
+        - $formkit: select
+          name: encryptAlgorithm
+          id: encryptAlgorithm
+          key: encryptAlgorithm
+          label: 加密算法
+          value: AES128
+          if: $get(encryptEnabled).value
+          help: 与 Bark App 中选择的算法一致；算法决定密钥长度（按 UTF-8 字节计）
+          options:
+            - label: AES128（密钥 16 字节）
+              value: AES128
+            - label: AES192（密钥 24 字节）
+              value: AES192
+            - label: AES256（密钥 32 字节）
+              value: AES256
+        - $formkit: select
+          name: encryptMode
+          id: encryptMode
+          key: encryptMode
+          label: 加密模式
+          value: CBC
+          if: $get(encryptEnabled).value
+          help: 与 Bark App 中选择的模式一致；初始向量由插件每次随机生成并随请求发送，无需填写
+          options:
+            - label: CBC
+              value: CBC
+            - label: ECB
+              value: ECB
+            - label: GCM
+              value: GCM
+        - $formkit: select
+          name: encryptPadding
+          id: encryptPadding
+          key: encryptPadding
+          label: 填充方式
+          value: pkcs7
+          if: $get(encryptEnabled).value
+          help: 与 Bark App 中选择的填充方式一致
+          options:
+            - label: pkcs7
+              value: pkcs7
+            - label: noPadding
+              value: noPadding
+        - $formkit: secret
+          name: encryptKey
+          id: encryptKey
+          key: encryptKey
+          label: 加密密钥
+          if: $get(encryptEnabled).value
+          descriptionPreset: Halo2Bark 加密密钥
+          requiredKeys:
+            - key: key
+              help: 与 Bark App 加密设置一致的密钥
+          help: 点「创建密钥」填入 Bark App 首页 → 推送加密 → 加密设置 中设置的密钥。长度须与所选算法一致：AES128 为 16 字节、AES192 为 24 字节、AES256 为 32 字节（按 UTF-8 计，首尾空格也算一个字节，不会自动去除）。密钥错误时插件会暂停全部推送
+
+    - group: events
+      label: 推送事件
+      formSchema:
+        - $formkit: checkbox
+          name: newCommentEnabled
+          id: newCommentEnabled
+          label: 新评论（文章 / 页面 / 其他主体）
+          value: true
+          help: 文章、独立页面以及第三方评论主体（如瞬间）均包含在内。自己评论自己的内容不会通知
+        - $formkit: checkbox
+          name: newReplyEnabled
+          id: newReplyEnabled
+          label: 新回复
+          value: true
+          help: 评论或回复收到回复时通知。自己发起的回复不会通知
+        - $formkit: checkbox
+          name: commentPendingEnabled
+          id: commentPendingEnabled
+          label: 评论待审核
+          value: true
+          help: 仅在站点开启评论审核时生效；此时新评论只发「评论待审核」，不会重复发送
+        - $formkit: checkbox
+          name: newDeviceLoginEnabled
+          id: newDeviceLoginEnabled
+          label: 新设备登录
+          value: true
+          help: 有新设备登录站点账号时通知。安全事件，固定「重要警告」级别，忽略静音与免打扰，且不受静默时段影响
+        - $formkit: checkbox
+          name: postPublishedEnabled
+          id: postPublishedEnabled
+          label: 文章发布
+          value: false
+          help: 发布新文章时通知
+        - $formkit: checkbox
+          name: userRegisteredEnabled
+          id: userRegisteredEnabled
+          label: 新用户注册
+          value: false
+          help: 有新用户注册时通知；站点未开放注册则不会触发
+        - $formkit: checkbox
+          name: postRemovedEnabled
+          id: postRemovedEnabled
+          label: 文章删除 / 取消发布
+          value: false
+          help: 文章被删除或取消发布时通知
