@@ -10,6 +10,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,6 +44,9 @@ public class NotificationDispatcher {
     private volatile boolean running;
     private volatile DeliveryQueue queue;
     private volatile ExecutorService workers;
+
+    /** 投递线程遇到可恢复错误并重建消费循环的累计次数（供状态端点读取）。 */
+    private final AtomicLong recoveredErrors = new AtomicLong();
 
     @Autowired
     public NotificationDispatcher(NotificationPipeline pipeline, Supplier<BarkSettings> settings) {
@@ -138,24 +142,68 @@ public class NotificationDispatcher {
                 || result == DeliveryQueue.Result.DROPPED_OLDEST;
     }
 
-    /** 溢出丢弃累计计数（PRD 10.5）。 */
-    long droppedCount() {
+    /** 溢出丢弃累计计数（PRD 10.5，供状态端点与测试读取）。 */
+    public long droppedCount() {
         var currentQueue = queue;
         return currentQueue == null ? 0 : currentQueue.droppedCount();
     }
 
+    /** 当前排队任务数（供状态端点读取）。 */
+    public int queueSize() {
+        var currentQueue = queue;
+        return currentQueue == null ? 0 : currentQueue.size();
+    }
+
+    /** 投递线程池是否在运行（供状态端点读取）。 */
+    public boolean running() {
+        return running;
+    }
+
+    /** 投递线程重建消费循环的累计次数（供状态端点与测试读取）。 */
+    public long recoveredErrorCount() {
+        return recoveredErrors.get();
+    }
+
+    /**
+     * 消费者循环。
+     *
+     * <p>{@code Error}（例如正则回溯导致的 {@link StackOverflowError}）会穿透 {@link #deliver}
+     * 与本循环。若不在循环内重建，该线程会退出，而线程池补出的新线程只会阻塞在空队列上——
+     * 结果是**每发生一次就永久少一个消费者**，反复之后投递能力归零。因此捕获可恢复错误后重建循环。
+     *
+     * <p>只捕获可恢复的 {@link StackOverflowError}：{@link OutOfMemoryError} 之后继续运行更危险，
+     * 应让它终止进程、交由外部重启。
+     */
     private void consume() {
         var currentQueue = queue;
+        while (!Thread.currentThread().isInterrupted()) {
+            if (currentQueue == null) {
+                return;
+            }
+            try {
+                if (!drain(currentQueue)) {
+                    return;
+                }
+            } catch (StackOverflowError e) {
+                long recovered = recoveredErrors.incrementAndGet();
+                log.error("{} 投递线程遇到可恢复错误，已重建消费循环（累计 {} 次）",
+                        BarkConstants.LOG_PREFIX, recovered);
+            }
+        }
+    }
+
+    /** @return {@code false} 表示队列已关闭，消费者应当退出 */
+    private boolean drain(DeliveryQueue currentQueue) {
         while (true) {
             DeliveryTask task;
             try {
                 task = currentQueue.take();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return;
+                return false;
             }
             if (task == null) {
-                return;
+                return false;
             }
             deliver(task);
         }

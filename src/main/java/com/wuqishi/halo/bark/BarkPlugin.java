@@ -1,6 +1,7 @@
 package com.wuqishi.halo.bark;
 
 import com.wuqishi.halo.bark.config.SettingsStore;
+import com.wuqishi.halo.bark.endpoint.StatusReporter;
 import com.wuqishi.halo.bark.pipeline.NoiseReducer;
 import com.wuqishi.halo.bark.queue.NotificationDispatcher;
 import lombok.extern.slf4j.Slf4j;
@@ -21,13 +22,16 @@ public class BarkPlugin extends BasePlugin {
     private final SettingsStore settingsStore;
     private final NotificationDispatcher dispatcher;
     private final NoiseReducer noiseReducer;
+    private final StatusReporter statusReporter;
 
     public BarkPlugin(PluginContext pluginContext, SettingsStore settingsStore,
-            NotificationDispatcher dispatcher, NoiseReducer noiseReducer) {
+            NotificationDispatcher dispatcher, NoiseReducer noiseReducer,
+            StatusReporter statusReporter) {
         super(pluginContext);
         this.settingsStore = settingsStore;
         this.dispatcher = dispatcher;
         this.noiseReducer = noiseReducer;
+        this.statusReporter = statusReporter;
     }
 
     @Override
@@ -35,6 +39,7 @@ public class BarkPlugin extends BasePlugin {
         settingsStore.loadInitial();
         dispatcher.start();
         noiseReducer.start();
+        statusReporter.start();
         log.info("{} 插件已启动", BarkConstants.LOG_PREFIX);
     }
 
@@ -42,6 +47,8 @@ public class BarkPlugin extends BasePlugin {
     public void stop() {
         // 顺序不可调换：dispatcher.stop() 会等待在途投递任务，而这些任务仍会调用
         // NoiseReducer.accept()；先关降噪层的定时器与补发执行器会让在途事件滞留或被拒绝。
+        // 状态汇总最先停：它只读计数，停得早可避免在关闭过程中读到半途状态并输出噪音日志。
+        statusReporter.stop();
         dispatcher.stop();
         noiseReducer.stop();
         log.info("{} 插件已停止", BarkConstants.LOG_PREFIX);

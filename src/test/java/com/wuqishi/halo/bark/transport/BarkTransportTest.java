@@ -209,6 +209,24 @@ class BarkTransportTest {
     }
 
     @Test
+    @DisplayName("批量失败是否降级：只有加密配置错误与请求超时不降级")
+    void degradationExceptionsAreEncryptionAndTimeout() {
+        assertThat(BarkTransport.worthDegrading(failed(DeliveryFailure.ENCRYPTION)))
+                .as("加密错误属全局性错误，逐设备重试不会改变结果").isFalse();
+        assertThat(BarkTransport.worthDegrading(failed(DeliveryFailure.TIMEOUT)))
+                .as("超时无法区分「未发出」与「已送达」，降级会把 1 条不确定重复放大成 N 条").isFalse();
+
+        assertThat(BarkTransport.worthDegrading(failed(DeliveryFailure.UNREACHABLE))).isTrue();
+        assertThat(BarkTransport.worthDegrading(failed(DeliveryFailure.SERVER_ERROR))).isTrue();
+        assertThat(BarkTransport.worthDegrading(failed(DeliveryFailure.CLIENT_ERROR))).isTrue();
+        assertThat(BarkTransport.worthDegrading(failed(DeliveryFailure.UNEXPECTED))).isTrue();
+    }
+
+    private static BarkRequestSender.Outcome failed(DeliveryFailure failure) {
+        return BarkRequestSender.Outcome.failed(failure, "测试");
+    }
+
+    @Test
     @DisplayName("批量失败时降级为逐设备，失败隔离到具体设备")
     void degradesToPerDeviceOnBatchFailure() {
         server.respond(request -> switch (request.path()) {

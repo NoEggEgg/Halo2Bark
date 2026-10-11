@@ -5,6 +5,7 @@ import com.wuqishi.halo.bark.Masking;
 import com.wuqishi.halo.bark.config.BarkSettings;
 import com.wuqishi.halo.bark.config.EventToggles;
 import com.wuqishi.halo.bark.event.SiteEvent;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -36,6 +37,9 @@ public class EventPipeline implements NotificationPipeline {
 
     /** 上次记录的「配置非法」问题集合签名，用于避免逐条事件重复打印同一条告警。 */
     private final AtomicReference<String> blockedSignature = new AtomicReference<>();
+
+    /** 处理失败（异常逃逸）的累计条数：失败即丢事件，必须可观测。 */
+    private final AtomicLong failedEvents = new AtomicLong();
 
     public EventPipeline(RecentEventDeduplicator deduplicator, EventJudge judge,
             NotificationComposer composer, NoiseReducer noiseReducer) {
@@ -84,7 +88,12 @@ public class EventPipeline implements NotificationPipeline {
             // 仅在成功交给降噪层后标记，使失败事件可被窗口内重试副本重新处理
             deduplicator.markSeen(event);
         } catch (RuntimeException e) {
-            log.warn("{} 事件处理失败：{}", BarkConstants.LOG_PREFIX, Masking.sanitize(e.toString()));
+            // 异常逃逸意味着该条事件已丢失（Halo 不会重发同一事件），因此按 ERROR 记录并累计计数：
+            // 只记 WARN 会让持续性缺陷长期无人发现。事件对象本身的 toString 已脱敏，此处只取类型名。
+            long failed = failedEvents.incrementAndGet();
+            log.error("{} 事件处理失败，本条通知已丢弃（事件类型 {}，累计失败 {} 条）：{}",
+                    BarkConstants.LOG_PREFIX, event.getClass().getSimpleName(), failed,
+                    Masking.sanitize(e.toString()));
         } finally {
             if (claimed) {
                 deduplicator.release(event);
@@ -113,6 +122,11 @@ public class EventPipeline implements NotificationPipeline {
         if (blockedSignature.get() != null) {
             blockedSignature.set(null);
         }
+    }
+
+    /** 因异常逃逸而丢失的事件累计条数（供状态端点与测试读取）。 */
+    public long failedEventCount() {
+        return failedEvents.get();
     }
 
     /** 判定语义 → 事件开关。 */

@@ -86,6 +86,27 @@ class NoiseReducerTest {
     }
 
     @Test
+    @DisplayName("免打扰缓冲有界：达到上限后丢弃最旧，且丢弃量可累计观测")
+    void quietBufferIsBounded() {
+        // 免打扰缓冲上限 3：静默时段内每条都进入暂存
+        var small = new NoiseReducer(delivery, clock, 20, 3, 500);
+        var quiet = pushSettings(
+                "{\"quietHoursEnabled\":true,\"quietHoursFrom\":\"23:00\",\"quietHoursTo\":\"07:00\"}");
+        clock.set(LocalTime.of(23, 30));
+
+        for (int i = 0; i < 6; i++) {
+            small.accept(Judgement.NEW_COMMENT, note("q" + i, NotificationCategory.INTERACTIVE), quiet);
+        }
+
+        assertThat(small.quietBufferSize())
+                .as("免打扰缓冲必须被上限约束，不得随静默时长与事件量无界增长")
+                .isEqualTo(3);
+        assertThat(small.droppedQuietCount())
+                .as("超出上限的部分必须被丢弃且可累计观测")
+                .isEqualTo(3);
+    }
+
+    @Test
     @DisplayName("安全事件直接送达：不受合并、限流、静默影响")
     void securityBypassesEverything() {
         var quiet = pushSettings("{\"quietHoursEnabled\":true,\"quietHoursFrom\":\"23:00\",\"quietHoursTo\":\"07:00\"}");

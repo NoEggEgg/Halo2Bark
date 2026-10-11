@@ -7,11 +7,22 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 配置校验，对应 PRD 5.7 的三条规则。
+ * 配置校验，对应 PRD 5.7 的规则。
+ *
+ * <p><b>两级结论</b>：
+ * <ul>
+ *   <li><b>阻断级</b>（{@link Report#blocking()}）——只有**加密**：启用加密但算法 / 模式 / 填充 / 密钥
+ *       不可用。此时无法安全投递（绝不能降级为明文），因此停止全部推送。</li>
+ *   <li><b>提示级</b>（{@link Report#warnings()}）——服务地址结构问题、内容长度、静默时段、音量。
+ *       这些取值在运行时都有确定的降级路径（地址非法的设备不参与投递、长度回退默认、静默边界失效、
+ *       音量不下发），因此**不停止推送**，只提示管理员修正。</li>
+ * </ul>
+ *
+ * <p>分级的必要性：把「一处笔误」与「无法安全投递」区分开。若所有问题都按阻断处理，任何一台设备的
+ * 地址笔误都会让整个站点收不到通知——而这类问题本可以只影响那一台设备。
  *
  * <p>服务地址是设备级配置，因此逐个设备校验，并在提示中指明是哪一台设备（PRD 10.6.2 反馈必须可操作）。
- * 服务地址为空**不**判为不合法——按 PRD 5.3，配置不完整的设备可保存、但该设备不参与投递；
- * 只有填写了却不合法才拒绝保存。
+ * 服务地址为空**不**判为问题——按 PRD 5.3，配置不完整的设备可保存、但不参与投递。
  *
  * <p>加密参数的取值与长度约束对照 Bark App 的 {@code Model/Algorithm.swift}：
  * 算法 AES128 / AES192 / AES256，模式 CBC / ECB / GCM，填充 pkcs7 / noPadding，
@@ -47,19 +58,34 @@ public final class SettingsValidator {
     }
 
     /**
+     * 校验结论。
+     *
+     * @param blocking 阻断级问题；非空表示停止全部推送
+     * @param warnings 提示级问题；不影响投递，仅提示管理员
+     */
+    public record Report(List<String> blocking, List<String> warnings) {
+
+        public Report {
+            blocking = blocking == null ? List.of() : List.copyOf(blocking);
+            warnings = warnings == null ? List.of() : List.copyOf(warnings);
+        }
+    }
+
+    /**
      * 校验配置。
      *
-     * @return 违规清单；为空表示配置合法
+     * @return 分级结论；{@link Report#blocking()} 为空表示配置可用于投递
      */
-    public static List<String> validate(BarkSettings settings) {
-        var issues = new ArrayList<String>();
+    public static Report inspect(BarkSettings settings) {
+        var blocking = new ArrayList<String>();
+        var warnings = new ArrayList<String>();
         var push = settings.push();
-        push.devices().forEach(device -> validateServerUrl(device, issues));
-        validateContentMaxLength(push.contentMaxLength(), issues);
-        validateEncryption(push, issues);
-        validateQuietHours(push, issues);
-        validateVolume(push, issues);
-        return List.copyOf(issues);
+        push.devices().forEach(device -> collectServerUrlWarning(device, warnings));
+        collectContentMaxLengthWarning(push.contentMaxLength(), warnings);
+        collectEncryptionBlocking(push, blocking);
+        collectQuietHoursWarning(push, warnings);
+        collectVolumeWarning(push, warnings);
+        return new Report(blocking, warnings);
     }
 
     /**
@@ -68,6 +94,9 @@ public final class SettingsValidator {
      * <p>出网目标必须可以安全地在其后拼接 {@code /info} 与 {@code /push}，
      * 因此不接受查询串、片段与用户信息——它们会让拼接结果落进错误的位置，
      * 也会让地址指向的地址与管理员看到的不一致。
+     *
+     * <p>末尾斜杠**不**判为问题：{@code BarkServerProbe} 与 {@code BarkRequestSender} 在拼接前
+     * 都会裁掉它，校验口径与运行时能力保持一致，避免一个纯装饰性的笔误让设备无法投递。
      */
     public enum UrlIssue {
 
@@ -82,9 +111,7 @@ public final class SettingsValidator {
         /** 含有 user:pass@ 形式的用户信息。 */
         USER_INFO("不能包含用户信息（形如 user:pass@host）"),
         /** 含有查询串或片段。 */
-        QUERY_OR_FRAGMENT("不能包含查询串或片段——插件会在其后拼接 /info 与 /push"),
-        /** 以斜杠结尾，拼接后会产生双斜杠。 */
-        TRAILING_SLASH("不能以斜杠结尾");
+        QUERY_OR_FRAGMENT("不能包含查询串或片段——插件会在其后拼接 /info 与 /push");
 
         private final String message;
 
@@ -129,9 +156,6 @@ public final class SettingsValidator {
         if (uri.getRawQuery() != null || uri.getRawFragment() != null) {
             return UrlIssue.QUERY_OR_FRAGMENT;
         }
-        if (serverUrl.endsWith("/")) {
-            return UrlIssue.TRAILING_SLASH;
-        }
         return UrlIssue.NONE;
     }
 
@@ -145,7 +169,7 @@ public final class SettingsValidator {
         };
     }
 
-    private static void validateServerUrl(DeviceSetting device, List<String> issues) {
+    private static void collectServerUrlWarning(DeviceSetting device, List<String> warnings) {
         var serverUrl = device.serverUrl();
         if (serverUrl == null || serverUrl.isBlank()) {
             return;
@@ -158,77 +182,78 @@ public final class SettingsValidator {
             case MALFORMED -> "请检查地址拼写，确认它是可访问的 Bark 服务地址。";
             case SCHEME -> "请补全协议头。";
             case NO_HOST -> "请填写完整地址，例如 https://api.day.app。";
-            case TRAILING_SLASH -> "请删除末尾的 /。";
             default -> "请修正后重试。";
         };
-        issues.add("设备「%s」的 Bark 服务地址".formatted(deviceLabel(device))
-                + issue.message() + "（当前：" + serverUrl + "）。" + hint);
+        warnings.add("设备「%s」的 Bark 服务地址".formatted(deviceLabel(device))
+                + issue.message() + "（当前：" + serverUrl + "）。" + hint
+                + "该设备在地址修正前不参与投递，其他设备不受影响。");
     }
 
-    private static void validateContentMaxLength(String raw, List<String> issues) {
+    private static void collectContentMaxLengthWarning(String raw, List<String> warnings) {
         var value = ConfigValues.intOrNull(raw);
         var range = MIN_CONTENT_MAX_LENGTH + "–" + MAX_CONTENT_MAX_LENGTH;
         if (value == null) {
-            issues.add(CONTENT_MAX_LENGTH_FIELD + "必须是 " + range + " 之间的整数（当前："
-                    + ConfigValues.textOrEmpty(raw) + "）。");
+            warnings.add(CONTENT_MAX_LENGTH_FIELD + "必须是 " + range + " 之间的整数（当前："
+                    + ConfigValues.textOrEmpty(raw) + "）。本次按默认值 "
+                    + PushSettings.DEFAULT_CONTENT_MAX_LENGTH + " 处理。");
             return;
         }
         if (value < MIN_CONTENT_MAX_LENGTH || value > MAX_CONTENT_MAX_LENGTH) {
-            issues.add(CONTENT_MAX_LENGTH_FIELD + "必须在 " + range + " 之间（当前：" + value
+            warnings.add(CONTENT_MAX_LENGTH_FIELD + "必须在 " + range + " 之间（当前：" + value
                     + "）。请调整到该范围内。");
         }
     }
 
     /**
-     * 静默时段边界（HH:mm）格式校验：沿用 {@link QuietHours} 的 STRICT 解析口径，
+     * 静默时段边界（HH:mm）格式：沿用 {@link QuietHours} 的 STRICT 解析口径，
      * 与运行时判定保持一致。任一边界缺失/非法、或起止相同时，运行时按「未设置」处理，
-     * 这里仅在格式明显非法时拒绝保存，避免配置笔误让静默时段静默失效（PRD 5.4）。
+     * 这里在格式明显非法时提示，避免配置笔误让静默时段静默失效（PRD 5.4）。
      */
-    private static void validateQuietHours(PushSettings push, List<String> issues) {
-        validateQuietTime("静默开始", push.quietHoursFrom(), issues);
-        validateQuietTime("静默结束", push.quietHoursTo(), issues);
+    private static void collectQuietHoursWarning(PushSettings push, List<String> warnings) {
+        collectQuietTimeWarning("静默开始", push.quietHoursFrom(), warnings);
+        collectQuietTimeWarning("静默结束", push.quietHoursTo(), warnings);
     }
 
-    private static void validateQuietTime(String field, String raw, List<String> issues) {
+    private static void collectQuietTimeWarning(String field, String raw, List<String> warnings) {
         if (raw == null || raw.isBlank()) {
             return;
         }
         if (QuietHours.parse(raw) == null) {
-            issues.add(field + "必须是 24 小时制时间（如 23:00），当前：" + raw
-                    + "。请使用 00:00–23:59 的格式。");
+            warnings.add(field + "必须是 24 小时制时间（如 23:00），当前：" + raw
+                    + "。请使用 00:00–23:59 的格式；本次该边界按「未设置」处理。");
         }
     }
 
     /**
-     * critical 告警音量（0–10）校验：与 {@link com.wuqishi.halo.bark.transport.BarkPayloadFactory#volume}
-     * 的传输层口径一致。留空表示使用系统默认，不报错。
+     * critical 告警音量（0–10）：与 {@link com.wuqishi.halo.bark.transport.BarkPayloadFactory#volume}
+     * 的传输层口径一致。留空表示使用系统默认，不提示。
      */
-    private static void validateVolume(PushSettings push, List<String> issues) {
+    private static void collectVolumeWarning(PushSettings push, List<String> warnings) {
         var raw = push.volume();
         if (raw == null || raw.isBlank()) {
             return; // 留空表示使用系统默认音量
         }
         var parsed = ConfigValues.intOrNull(raw);
         if (parsed == null || parsed < 0 || parsed > 10) {
-            issues.add("critical 告警音量必须是 0–10 的整数（当前：" + raw
-                    + "）。留空表示使用系统默认。");
+            warnings.add("critical 告警音量必须是 0–10 的整数（当前：" + raw
+                    + "）。留空表示使用系统默认；本次不下发音量参数。");
         }
     }
 
-    private static void validateEncryption(PushSettings push, List<String> issues) {
+    private static void collectEncryptionBlocking(PushSettings push, List<String> blocking) {
         if (!Boolean.TRUE.equals(push.encryptEnabled())) {
             return;
         }
         if (!ENCRYPT_ALGORITHMS.contains(push.encryptAlgorithm())) {
-            issues.add(ENCRYPT_ALGORITHM_FIELD + "不支持「" + push.encryptAlgorithm() + "」。可选："
+            blocking.add(ENCRYPT_ALGORITHM_FIELD + "不支持「" + push.encryptAlgorithm() + "」。可选："
                     + String.join(" / ", ENCRYPT_ALGORITHMS) + "，请与 Bark App 中的设置保持一致。");
         }
         if (!ENCRYPT_MODES.contains(push.encryptMode())) {
-            issues.add(ENCRYPT_MODE_FIELD + "不支持「" + push.encryptMode() + "」。可选："
+            blocking.add(ENCRYPT_MODE_FIELD + "不支持「" + push.encryptMode() + "」。可选："
                     + String.join(" / ", ENCRYPT_MODES) + "，请与 Bark App 中的设置保持一致。");
         }
         if (!ENCRYPT_PADDINGS.contains(push.encryptPadding())) {
-            issues.add(ENCRYPT_PADDING_FIELD + "不支持「" + push.encryptPadding() + "」。可选："
+            blocking.add(ENCRYPT_PADDING_FIELD + "不支持「" + push.encryptPadding() + "」。可选："
                     + String.join(" / ", ENCRYPT_PADDINGS) + "，请与 Bark App 中的设置保持一致。");
         }
 
@@ -236,7 +261,7 @@ public final class SettingsValidator {
         if (key == null || key.isBlank()) {
             // 「缺失」与「引用的 Secret 读不到」在这里合并为同一句：两者对用户的处置动作相同
             // （到设置页重新选择密钥），分开表述只会让同一次配置错误出现两条含义相近的提示。
-            issues.add(ENCRYPT_KEY_FIELD + "缺失或无法读取，但已启用加密推送。请到插件设置页重新选择密钥"
+            blocking.add(ENCRYPT_KEY_FIELD + "缺失或无法读取，但已启用加密推送。请到插件设置页重新选择密钥"
                     + "（密钥内容需与 Bark App 首页 → 推送加密 → 加密设置 中的一致）。");
             return;
         }
@@ -246,7 +271,7 @@ public final class SettingsValidator {
         if (expected > 0) {
             var bytes = key.getBytes(StandardCharsets.UTF_8).length;
             if (bytes != expected) {
-                issues.add(ENCRYPT_KEY_FIELD + "必须是 " + expected + " 个字节（" + push.encryptAlgorithm()
+                blocking.add(ENCRYPT_KEY_FIELD + "必须是 " + expected + " 个字节（" + push.encryptAlgorithm()
                         + " 要求，按 UTF-8 计算，当前 " + bytes + " 个字节）。"
                         + "请与 Bark App 中的密钥逐字核对，注意空格也算一个字节。");
             }

@@ -13,13 +13,14 @@ import reactor.core.publisher.Mono;
  * <p>职责边界：只做「引用 → 值」的替换与「读不到」的归因，不做取值合法性校验——
  * 密钥长度、算法匹配等仍由 {@link SettingsValidator} 统一判定，避免两处口径分叉。
  *
- * <p>读不到的引用会被替换为空白并产生一条 issue，由 {@link SettingsStore} 写入快照，
- * 投递线程据此**停止全部推送**。
+ * <p>读不到的引用会被替换为空白并产生归因，由 {@link SettingsStore} 分级写入快照：
+ * <b>设备 Key</b> 读不到时该设备因 Key 为空自动不参与投递，属**提示级**；
+ * <b>加密密钥</b> 读不到则无法安全投递（不得降级为明文），属**阻断级**，投递线程据此停止全部推送。
  *
  * <p>两处刻意不报错：
  * <ul>
  *   <li>设备 Key 为空——按 PRD 5.3，配置不完整的设备允许保存，只是不参与投递。</li>
- *   <li>未启用加密时的加密密钥——该字段不参与投递，避免「已删除的旧引用」把整体配置判为非法。</li>
+ *   <li>未启用加密时的加密密钥——该字段不参与投递，避免「已删除的旧引用」把整体配置判为阻断。</li>
  * </ul>
  */
 @Component
@@ -33,11 +34,12 @@ public class CredentialResolver {
         this.accessor = accessor;
     }
 
-    /** 解析结果：设备 Key 与加密密钥均已替换为实际值，并附带「读不到」的归因。 */
-    public record Resolution(PushSettings push, List<String> issues) {
+    /** 解析结果：设备 Key 与加密密钥均已替换为实际值，并附带「读不到」的分级归因。 */
+    public record Resolution(PushSettings push, List<String> warnings, List<String> blocking) {
 
         public Resolution {
-            issues = issues == null ? List.of() : List.copyOf(issues);
+            warnings = warnings == null ? List.of() : List.copyOf(warnings);
+            blocking = blocking == null ? List.of() : List.copyOf(blocking);
         }
     }
 
@@ -91,13 +93,17 @@ public class CredentialResolver {
 
     private static Resolution assemble(PushSettings raw, List<DeviceResolution> devices,
             KeyResolution encrypt) {
-        var issues = new ArrayList<String>();
-        devices.stream().map(DeviceResolution::issue).filter(Objects::nonNull).forEach(issues::add);
+        // 设备密钥读不到 → 该设备已因 Key 为空而不参与投递，属提示级，不影响其他设备；
+        // 加密密钥读不到 → 无法安全投递（不得降级为明文），属阻断级。
+        var warnings = new ArrayList<String>();
+        devices.stream().map(DeviceResolution::issue).filter(Objects::nonNull).forEach(warnings::add);
+        var blocking = new ArrayList<String>();
         if (encrypt.issue() != null) {
-            issues.add(encrypt.issue());
+            blocking.add(encrypt.issue());
         }
         var resolvedDevices = devices.stream().map(DeviceResolution::device).toList();
-        return new Resolution(raw.withDevices(resolvedDevices).withEncryptKey(encrypt.value()), issues);
+        return new Resolution(raw.withDevices(resolvedDevices).withEncryptKey(encrypt.value()),
+                warnings, blocking);
     }
 
     private static DeviceSetting copyWithKey(DeviceSetting device, String key) {

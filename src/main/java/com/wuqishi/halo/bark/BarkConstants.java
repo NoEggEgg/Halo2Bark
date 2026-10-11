@@ -41,10 +41,18 @@ public final class BarkConstants {
     /**
      * 服务端探测结果的**负向缓存**有效期（毫秒）：10 分钟。
      *
-     * <p>「支持 V2」是稳定结论，可长期缓存；但「不可达 / 不支持 V2」可能只是瞬时网络问题或
-     * 服务端尚未升级，若永久缓存会把该地址钉死在 V1 回退与禁用批量上，直到插件重启。
+     * <p>「不可达 / 不支持 V2」可能只是瞬时网络问题或服务端尚未升级，若长期缓存会把该地址钉死在
+     * V1 回退与禁用批量上。
      */
     public static final long SERVER_PROBE_TTL_MILLIS = 600_000L;
+
+    /**
+     * 服务端探测结果的**正向缓存**有效期（毫秒）：24 小时。
+     *
+     * <p>「支持 V2」比负向结论稳定，因此缓存更久，避免每次冷启动都重新探测；但不做永久缓存——
+     * 服务端降级或更换后，永久缓存会让插件一直按 V2 发送、直到进程重启。
+     */
+    public static final long SERVER_PROBE_POSITIVE_TTL_MILLIS = 86_400_000L;
 
     /** 一天对应的秒数，用于把归档保留时长从「天」换算为 Bark 要求的「秒」。 */
     public static final long SECONDS_PER_DAY = 86_400L;

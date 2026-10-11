@@ -88,11 +88,12 @@ public class EventJudge {
             log.debug("{} 操作者自身的回复，不通知：{}", BarkConstants.LOG_PREFIX, reply);
             return Optional.empty();
         }
-        if (isSameAuthor(reply.ownerKind(), reply.ownerName(), replieeOf(reply))) {
+        // 所属评论只读一次：「被回复者」与「被评论主体作者」两条判定都要用到它
+        var parent = commentOf(reply.commentName());
+        if (isSameAuthor(reply.ownerKind(), reply.ownerName(), replieeOf(reply, parent))) {
             return Optional.empty();
         }
-        if (isSameAuthor(reply.ownerKind(), reply.ownerName(),
-                subjectAuthorOfComment(reply.commentName()))) {
+        if (isSameAuthor(reply.ownerKind(), reply.ownerName(), subjectAuthorOf(parent))) {
             return Optional.empty();
         }
         return Optional.of(Judgement.NEW_REPLY);
@@ -108,7 +109,7 @@ public class EventJudge {
      * 访客邮箱（{@code name} 即邮箱）。只取 {@code name} 会把邮箱误当用户名去查用户表，导致
      * 「访客回复自己的评论」被误判为不同人。
      */
-    private Author replieeOf(SiteEvent.ReplyCreated reply) {
+    private Author replieeOf(SiteEvent.ReplyCreated reply, Optional<Comment> parent) {
         var quoted = reply.quoteReplyName();
         if (quoted != null && !quoted.isBlank()) {
             var quotedAuthor = replyAuthor(quoted);
@@ -116,7 +117,7 @@ public class EventJudge {
                 return quotedAuthor;
             }
         }
-        return commentAuthor(reply.commentName());
+        return commentAuthor(parent);
     }
 
     private Author replyAuthor(String replyName) {
@@ -133,40 +134,36 @@ public class EventJudge {
         }
     }
 
-    private Author commentAuthor(String commentName) {
+    /** 所属评论；不存在或读取失败时为空（由调用方按「不抑制」处理）。 */
+    private Optional<Comment> commentOf(String commentName) {
         if (commentName == null) {
-            return null;
+            return Optional.empty();
         }
         try {
-            return client.fetch(Comment.class, commentName)
-                    .map(Comment::getSpec)
-                    .map(spec -> spec == null ? null : spec.getOwner())
-                    .map(owner -> owner == null ? null : new Author(owner.getKind(), owner.getName()))
-                    .orElse(null);
+            return client.fetch(Comment.class, commentName);
         } catch (RuntimeException e) {
             log.warn("{} 判定回复作者时读取被回复评论失败，按「不抑制」处理：{}", BarkConstants.LOG_PREFIX,
                     Masking.sanitize(e.toString()));
-            return null;
+            return Optional.empty();
         }
     }
 
+    private static Author commentAuthor(Optional<Comment> comment) {
+        return comment
+                .map(Comment::getSpec)
+                .map(spec -> spec == null ? null : spec.getOwner())
+                .map(owner -> owner == null ? null : new Author(owner.getKind(), owner.getName()))
+                .orElse(null);
+    }
+
     /** 回复所属评论的**被评论主体**作者（用户名）；取不到时返回 {@code null} 表示不抑制。 */
-    private Author subjectAuthorOfComment(String commentName) {
-        if (commentName == null) {
-            return null;
-        }
-        try {
-            var ref = client.fetch(Comment.class, commentName)
-                    .map(Comment::getSpec)
-                    .map(spec -> spec == null ? null : spec.getSubjectRef())
-                    .orElse(null);
-            var owner = subjectOwner(ref);
-            return owner == null ? null : new Author("User", owner);
-        } catch (RuntimeException e) {
-            log.warn("{} 判定回复作者时读取被评论主体失败，按「不抑制」处理：{}", BarkConstants.LOG_PREFIX,
-                    Masking.sanitize(e.toString()));
-            return null;
-        }
+    private Author subjectAuthorOf(Optional<Comment> comment) {
+        var ref = comment
+                .map(Comment::getSpec)
+                .map(spec -> spec == null ? null : spec.getSubjectRef())
+                .orElse(null);
+        var owner = subjectOwner(ref);
+        return owner == null ? null : new Author("User", owner);
     }
 
     private String subjectOwner(SiteEvent.SubjectRef ref) {

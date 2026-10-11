@@ -27,8 +27,14 @@ public record DeviceSetting(String name, String key, String serverUrl, Boolean e
         enabled = ConfigValues.flagOrTrue(enabled);
     }
 
-    /** 设备是否具备投递条件：已启用、设备 Key 非空、服务地址非空。 */
+    /**
+     * 设备是否具备投递条件：已启用、设备 Key 非空、服务地址非空且结构上可作为出网目标。
+     *
+     * <p>服务地址的结构问题在这里就地把该设备排除，而不是升级为全局问题：一台设备的地址笔误
+     * 只应影响那一台设备，其他设备照常投递（PRD 5.3、5.7）。
+     */
     public boolean deliverable() {
-        return Boolean.TRUE.equals(enabled) && !key.isBlank() && !serverUrl.isBlank();
+        return Boolean.TRUE.equals(enabled) && !key.isBlank() && !serverUrl.isBlank()
+                && SettingsValidator.inspectUrl(serverUrl) == SettingsValidator.UrlIssue.NONE;
     }
 }

@@ -25,6 +25,19 @@ class BarkHttpClientTest {
     }
 
     @Test
+    @DisplayName("超大响应体只读取前 64 KB，不整体读入内存")
+    void oversizedResponseBodyIsTruncated() throws Exception {
+        origin = new MockBarkServer();
+        origin.respond(request -> new MockBarkServer.Response(200, "x".repeat(200 * 1024)));
+
+        var response = new BarkHttpClient().get(origin.url() + "/info");
+
+        assertEquals(200, response.status());
+        assertEquals(64 * 1024, response.body().length(),
+                "超出上限的部分必须被丢弃，避免异常或恶意服务端把内存打满");
+    }
+
+    @Test
     @DisplayName("同源重定向会被跟随，最终返回目标响应")
     void followsSameOriginRedirect() throws Exception {
         origin = new MockBarkServer();

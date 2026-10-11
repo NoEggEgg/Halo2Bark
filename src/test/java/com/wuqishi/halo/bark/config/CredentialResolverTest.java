@@ -32,7 +32,7 @@ class CredentialResolverTest {
 
         var resolution = resolve(resolver, raw);
 
-        assertThat(resolution.issues()).isEmpty();
+        assertThat(resolution.warnings()).isEmpty();
         assertThat(resolution.push().devices()).singleElement()
                 .satisfies(device -> {
                     assertThat(device.key()).isEqualTo("device-key-value");
@@ -52,7 +52,7 @@ class CredentialResolverTest {
 
         var resolution = resolve(resolver, raw);
 
-        assertThat(resolution.issues()).isEmpty();
+        assertThat(resolution.warnings()).isEmpty();
         assertThat(resolution.push().devices()).singleElement()
                 .satisfies(device -> assertThat(device.deliverable()).isFalse());
     }
@@ -67,9 +67,10 @@ class CredentialResolverTest {
 
         var resolution = resolve(resolver, raw);
 
-        assertThat(resolution.issues()).singleElement()
+        assertThat(resolution.warnings()).singleElement()
                 .satisfies(issue -> assertThat(issue)
                         .contains("iPhone").contains("secret-gone").contains("重新选择或创建密钥"));
+        assertThat(resolution.blocking()).as("设备密钥读不到只影响该设备，不阻断全部推送").isEmpty();
         assertThat(resolution.push().devices()).singleElement()
                 .satisfies(device -> {
                     assertThat(device.key()).as("不得保留引用原文当作 Key").isEmpty();
@@ -95,7 +96,7 @@ class CredentialResolverTest {
                 .containsExactly("A", "B", "C");
         assertThat(resolution.push().devices()).extracting(DeviceSetting::key)
                 .containsExactly("key-a", "", "key-c");
-        assertThat(resolution.issues()).singleElement()
+        assertThat(resolution.warnings()).singleElement()
                 .satisfies(issue -> assertThat(issue).contains("B").contains("secret-b"));
     }
 
@@ -111,10 +112,10 @@ class CredentialResolverTest {
 
         var resolution = resolve(resolver, raw);
 
-        assertThat(resolution.issues()).isEmpty();
+        assertThat(resolution.warnings()).isEmpty();
         assertThat(resolution.push().encryptKey()).isEqualTo("0123456789abcdef");
-        assertThat(SettingsValidator.validate(new BarkSettings(resolution.push(),
-                EventToggles.defaults()))).isEmpty();
+        assertThat(SettingsValidator.inspect(new BarkSettings(resolution.push(),
+                EventToggles.defaults())).blocking()).isEmpty();
     }
 
     @Test
@@ -129,8 +130,9 @@ class CredentialResolverTest {
         var resolution = resolve(resolver, raw);
 
         assertThat(resolution.push().encryptKey()).isEmpty();
-        assertThat(resolution.issues()).singleElement()
+        assertThat(resolution.blocking()).singleElement()
                 .satisfies(issue -> assertThat(issue).contains("secret-gone").contains("加密密钥"));
+        assertThat(resolution.warnings()).as("加密密钥问题属阻断级，不重复计入提示级").isEmpty();
     }
 
     @Test
@@ -144,10 +146,10 @@ class CredentialResolverTest {
 
         var resolution = resolve(resolver, raw);
 
-        assertThat(resolution.issues()).isEmpty();
+        assertThat(resolution.warnings()).isEmpty();
         assertThat(resolution.push().encryptKey()).isEqualTo("secret-deleted-long-ago");
-        assertThat(SettingsValidator.validate(new BarkSettings(resolution.push(),
-                EventToggles.defaults()))).isEmpty();
+        assertThat(SettingsValidator.inspect(new BarkSettings(resolution.push(),
+                EventToggles.defaults())).blocking()).isEmpty();
     }
 
     @Test
@@ -158,7 +160,7 @@ class CredentialResolverTest {
 
         var resolution = resolve(resolver, raw);
 
-        assertThat(resolution.issues()).isEmpty();
+        assertThat(resolution.warnings()).isEmpty();
         assertThat(resolution.push().encryptKey()).isEmpty();
     }
 

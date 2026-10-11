@@ -104,34 +104,41 @@ public class SettingsStore {
                         settingFetcher.fetch(EVENTS_GROUP, EventToggles.class)
                                 .defaultIfEmpty(EventToggles.defaults()))
                 // ConfigMap 中的设备 Key 与加密密钥是 Secret 名称，必须解析成实际值再进快照，
-                // 否则投递层会拿名称当密钥使用；解析不到的引用作为 issue 一并带入快照。
+                // 否则投递层会拿名称当密钥使用；读不到的引用按级归因一并带入快照。
                 .flatMap(tuple -> credentialResolver.resolve(tuple.getT1())
                         .map(resolution -> new BarkSettings(resolution.push(), tuple.getT2(),
-                                resolution.issues())));
+                                resolution.blocking(), resolution.warnings())));
     }
 
     /**
      * 使一份候选配置生效。
      *
-     * <p>始终采用新快照并把校验结论一并写入，不保留上一份配置：若保留旧快照，投递线程
-     * 就无法感知「新配置非法」这一状态。
+     * <p>始终采用新快照并把结论一并写入，不保留上一份配置：若保留旧快照，投递线程
+     * 就无法感知「新配置不可用」这一状态。
      *
-     * <p>投递线程见到非法快照会**停止全部推送**，直到配置被修正；日志以 ERROR 级别输出。
+     * <p>两级结论（PRD 5.7）：**阻断级**（加密不可用，无法安全投递）让投递线程停止全部推送，
+     * 日志以 ERROR 输出；**提示级**（服务地址笔误、长度 / 时间 / 音量非法）有确定的降级路径，
+     * 只以 WARN 提示，不影响投递。
      */
     private void apply(BarkSettings candidate) {
-        // 先收拢凭据解析的归因（读不到 Secret 引用），再叠加取值合法性校验，
-        // 两类问题都面向用户可读，一并写入快照由投递线程统一处置。
-        var issues = new ArrayList<>(candidate.issues());
-        issues.addAll(SettingsValidator.validate(candidate));
-        var resolved = new BarkSettings(candidate.push(), candidate.events(), issues);
-        snapshot = resolved;
-        if (!issues.isEmpty()) {
+        var report = SettingsValidator.inspect(candidate);
+        var blocking = new ArrayList<>(candidate.issues());
+        blocking.addAll(report.blocking());
+        var warnings = new ArrayList<>(candidate.warnings());
+        warnings.addAll(report.warnings());
+        snapshot = new BarkSettings(candidate.push(), candidate.events(), blocking, warnings);
+        if (!blocking.isEmpty()) {
             // 校验信息面向用户可读，其中含服务地址原文；写入日志前统一脱敏（PRD 5.8）
             log.error("{} 配置校验未通过，已停止全部推送。请到插件设置页修正以下问题：{}",
-                    BarkConstants.LOG_PREFIX, Masking.sanitize(issues.toString()));
-            return;
+                    BarkConstants.LOG_PREFIX, Masking.sanitize(blocking.toString()));
         }
-        log.info("{} 配置已生效：{}", BarkConstants.LOG_PREFIX, describe(candidate));
+        if (!warnings.isEmpty()) {
+            log.warn("{} 配置存在不影响推送的问题，相关取值已按降级处理：{}",
+                    BarkConstants.LOG_PREFIX, Masking.sanitize(warnings.toString()));
+        }
+        if (blocking.isEmpty()) {
+            log.info("{} 配置已生效：{}", BarkConstants.LOG_PREFIX, describe(candidate));
+        }
     }
 
     /** 生成脱敏的配置摘要：只输出数量与开关状态，不含设备 Key 与加密密钥。 */

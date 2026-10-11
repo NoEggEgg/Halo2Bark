@@ -6,10 +6,13 @@ import com.wuqishi.halo.bark.config.DeviceSetting;
 import com.wuqishi.halo.bark.config.PushSettings;
 import com.wuqishi.halo.bark.push.NotificationCategory;
 import com.wuqishi.halo.bark.push.PushNotification;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -49,6 +52,9 @@ public class BarkTransport implements NotificationDelivery {
     private final BarkPayloadFactory factory;
     private final BarkRequestSender sender;
     private final SiteBrandSupplier siteBrand;
+
+    /** 最近一次投递的摘要（含「测试该设备」发起的投递），供状态端点读取。 */
+    private final AtomicReference<LastDelivery> lastDelivery = new AtomicReference<>();
 
     @Autowired
     public BarkTransport(BarkHttpClient http, BarkServerProbe probe, BarkPayloadFactory factory,
@@ -100,8 +106,26 @@ public class BarkTransport implements NotificationDelivery {
             results.addAll(deliverGroup(context, entry.getKey(), entry.getValue()));
         }
         var report = new DeliveryReport(results);
+        lastDelivery.set(new LastDelivery(Instant.now(), report.results().size(),
+                report.successCount(), report.failureCount()));
         logSummary(report);
         return report;
+    }
+
+    /** 最近一次投递摘要；尚未投递过时为空（供状态端点读取）。 */
+    public Optional<LastDelivery> lastDelivery() {
+        return Optional.ofNullable(lastDelivery.get());
+    }
+
+    /**
+     * 最近一次投递的摘要。
+     *
+     * @param at 完成时刻
+     * @param deviceCount 参与投递的设备数
+     * @param successCount 成功设备数
+     * @param failureCount 失败设备数
+     */
+    public record LastDelivery(Instant at, int deviceCount, long successCount, long failureCount) {
     }
 
     /** 投递同一个服务地址下的设备。 */
@@ -187,11 +211,17 @@ public class BarkTransport implements NotificationDelivery {
      * <p>PRD 5.3 要求批量请求失败后**必须**降级为逐设备重试，因为批量响应无法区分是哪台设备出错；
      * 且明确写了「若逐设备仍全部失败，判定为服务端或网络问题」，即服务端级故障同样要走降级。
      *
-     * <p>唯一例外是**全局性错误**（当前只有加密配置错误）：逐设备重试不会改变结果，
-     * 只会把同一失败重复 N 遍，因此直接以同一原因标记该地址下的所有设备。
+     * <p>两类例外——逐设备重试不会改变结果，或会把不确定的失败放大成确定的重复：
+     * <ul>
+     *   <li><b>加密配置错误</b>：属全局性错误，逐设备重试只会把同一失败重复 N 遍。</li>
+     *   <li><b>请求超时</b>：无法区分「请求未发出」与「服务端已处理、响应丢失」。后者若再逐设备
+     *       重发，会把 1 条不确定的重复放大成 N 条确定的重复；因此整组按超时标记失败，
+     *       宁可漏掉这一条（有 ERROR 日志）也不制造 N 条重复。</li>
+     * </ul>
      */
-    private static boolean worthDegrading(BarkRequestSender.Outcome batch) {
-        return batch.failure() != DeliveryFailure.ENCRYPTION;
+    static boolean worthDegrading(BarkRequestSender.Outcome batch) {
+        return batch.failure() != DeliveryFailure.ENCRYPTION
+                && batch.failure() != DeliveryFailure.TIMEOUT;
     }
 
     private static int maxRetries(PushNotification notification) {

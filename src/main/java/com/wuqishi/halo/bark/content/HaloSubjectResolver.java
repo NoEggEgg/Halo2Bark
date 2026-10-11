@@ -4,6 +4,9 @@ import com.wuqishi.halo.bark.BarkConstants;
 import com.wuqishi.halo.bark.Masking;
 import com.wuqishi.halo.bark.event.SiteEvent;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import run.halo.app.content.comment.CommentSubject;
@@ -35,12 +38,21 @@ public class HaloSubjectResolver implements SubjectResolver {
     /** 等待 CommentSubject 返回来源信息的超时；第三方实现可能异常，超时即降级。 */
     private static final Duration SUBJECT_TIMEOUT = Duration.ofSeconds(2);
 
+    /**
+     * CommentSubject 扩展列表的缓存时长。
+     *
+     * <p>该列表只在插件启停时变化，逐条事件重新查询纯属浪费；短时缓存兼顾「新装评论主体插件后
+     * 尽快可见」。
+     */
+    private static final Duration SUBJECT_LIST_TTL = Duration.ofSeconds(30);
+
     /** 用户 / 设备类事件没有业务主体，跳转 Console 的用户管理页（PRD 5.5）。 */
     private static final String USER_CONSOLE_PATH = "/console/users";
 
     private final ExtensionClient client;
     private final ExtensionGetter extensionGetter;
     private final ExternalLinkProcessor linkProcessor;
+    private final AtomicReference<CachedSubjects> subjectCache = new AtomicReference<>();
 
     public HaloSubjectResolver(ExtensionClient client, ExtensionGetter extensionGetter,
             ExternalLinkProcessor linkProcessor) {
@@ -122,7 +134,7 @@ public class HaloSubjectResolver implements SubjectResolver {
             return ResolvedSubject.EMPTY;
         }
         try {
-            for (CommentSubject subject : extensionGetter.getExtensionList(CommentSubject.class)) {
+            for (CommentSubject subject : subjects()) {
                 // 逐 provider 隔离异常：某一个 CommentSubject 的 supports() 或 getSubjectDisplay() 抛错
                 // / 超时时，不应中断整轮循环，使后面仍可解析的主体被错误降级到首页。
                 try {
@@ -145,6 +157,27 @@ public class HaloSubjectResolver implements SubjectResolver {
                     Masking.sanitize(e.toString()));
         }
         return ResolvedSubject.EMPTY;
+    }
+
+    /**
+     * CommentSubject 扩展列表；带短时缓存。
+     *
+     * <p>读取失败**不缓存**，下一次事件会立即重试——与「取不到就降级为站点首页」的既有语义一致，
+     * 缓存失败结果反而会让一次瞬时故障把来源信息静默抹掉 {@link #SUBJECT_LIST_TTL}。
+     */
+    private List<CommentSubject> subjects() {
+        var now = Instant.now();
+        var cached = subjectCache.get();
+        if (cached != null && now.isBefore(cached.expiresAt())) {
+            return cached.subjects();
+        }
+        var list = List.copyOf(extensionGetter.getExtensionList(CommentSubject.class));
+        subjectCache.set(new CachedSubjects(list, now.plus(SUBJECT_LIST_TTL)));
+        return list;
+    }
+
+    /** CommentSubject 扩展列表的缓存条目。 */
+    private record CachedSubjects(List<CommentSubject> subjects, Instant expiresAt) {
     }
 
     /**

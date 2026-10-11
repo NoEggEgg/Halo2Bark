@@ -69,11 +69,20 @@ public class NoiseReducer {
     /**
      * 降噪补发任务队列上限。
      *
-     * <p>补发（合并摘要 / 限流溢出 / 免打扰时段结束）由单线程执行器承担，若队列无界，
+     * <p>补发（合并摘要 / 限流溢出 / 免打扰时段结束）由专用执行器承担，若队列无界，
      * 冲刷跟不上时任务会无限堆积。因此使用有界队列，超限时丢弃并记录（补发是尽力而为，
      * 丢弃不影响后续投递）。
      */
-    static final int DEFERRED_QUEUE_CAPACITY = 100;
+    static final int DEFERRED_QUEUE_CAPACITY = 200;
+
+    /**
+     * 补发执行器线程数。
+     *
+     * <p>补发任务内部会发起**阻塞 HTTP**（含重试，单条最长可达数十秒）。单线程会让所有摘要相互
+     * 串行：一台慢服务端就能把队列堆满，而被丢弃的恰恰是「把 N 条压成 1 条」的聚合通知。
+     * 因此用少量线程并行，使个别慢请求不阻塞其余摘要。
+     */
+    static final int DEFERRED_THREADS = 2;
 
     private final NotificationDelivery delivery;
     private final Clock clock;
@@ -95,10 +104,16 @@ public class NoiseReducer {
     /** 缓冲溢出被丢弃的累计条数：丢弃必须可观测，不能静默发生。 */
     private final AtomicLong droppedOverflow = new AtomicLong();
 
+    /** 免打扰缓冲因达到上限而被丢弃的累计条数（与 {@link #droppedOverflow} 同一口径）。 */
+    private final AtomicLong droppedQuiet = new AtomicLong();
+
     private volatile boolean running;
 
     /** 缓冲达到上限的告警是否已打印过（避免逐条刷屏，缓冲排空后复位）。 */
     private volatile boolean overflowCapWarned;
+
+    /** 免打扰缓冲达到上限的告警是否已打印过（避免长静默时段逐条刷屏）。 */
+    private volatile boolean quietCapWarned;
 
     @Autowired
     public NoiseReducer(NotificationDelivery delivery) {
@@ -142,7 +157,7 @@ public class NoiseReducer {
      * 但必须记录，不能静默发生）。
      */
     private static ExecutorService newDeferredExecutor() {
-        return new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+        return new ThreadPoolExecutor(DEFERRED_THREADS, DEFERRED_THREADS, 0L, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(DEFERRED_QUEUE_CAPACITY),
                 daemonFactory(BarkConstants.DELIVERY_THREAD_NAME_PREFIX + "noise-flush-"),
                 (task, executor) -> log.warn("{} 降噪补发队列已满（上限 {} 个任务），丢弃本次补发",
@@ -192,6 +207,7 @@ public class NoiseReducer {
                 overflow.clear();
                 overflowMinute = Long.MIN_VALUE;
                 overflowCapWarned = false;
+                quietCapWarned = false;
             }
             int pendingMerge = mergeWindows.discardPending();
             if (pendingQuiet + pendingOverflow + pendingMerge > 0) {
@@ -235,9 +251,18 @@ public class NoiseReducer {
                 if (quietBuffer.size() >= quietBufferCapacity) {
                     // 超出上限丢弃最旧的 1 条：与投递队列在压力下丢弃最旧任务保持一致，
                     // 避免超长静默时段叠加高事件量导致缓冲无界增长。
+                    // 告警只打首次，其余降为 debug——长静默时段内逐条 WARN 会淹没日志。
                     quietBuffer.remove(0);
-                    log.warn("{} 免打扰缓冲已达上限 {} 条，丢弃最旧的 1 条以免无界增长",
-                            BarkConstants.LOG_PREFIX, quietBufferCapacity);
+                    long dropped = droppedQuiet.incrementAndGet();
+                    if (!quietCapWarned) {
+                        quietCapWarned = true;
+                        log.warn("{} 免打扰缓冲已达上限 {} 条，丢弃最旧的 1 条以免无界增长"
+                                        + "（累计丢弃 {} 条）",
+                                BarkConstants.LOG_PREFIX, quietBufferCapacity, dropped);
+                    } else {
+                        log.debug("{} 免打扰缓冲已满，丢弃最旧的 1 条（累计丢弃 {} 条）",
+                                BarkConstants.LOG_PREFIX, dropped);
+                    }
                 }
                 quietBuffer.add(new BufferedNotification(judgement, notification, settings));
             }
@@ -331,6 +356,10 @@ public class NoiseReducer {
                     toFlush = List.copyOf(ready);
                     quietBuffer.clear();
                     quietBuffer.addAll(stillQuiet);
+                    if (stillQuiet.isEmpty()) {
+                        // 缓冲已排空：复位告警，使其下次再次达到上限时仍会提示
+                        quietCapWarned = false;
+                    }
                 }
             }
         }
@@ -412,23 +441,33 @@ public class NoiseReducer {
         deliver(item.notification(), item.settings());
     }
 
-    /** 限流溢出缓冲因达到上限而被丢弃的累计条数（供观测与测试）。 */
-    long droppedOverflowCount() {
+    /** 限流溢出缓冲因达到上限而被丢弃的累计条数（供状态端点与测试读取）。 */
+    public long droppedOverflowCount() {
         return droppedOverflow.get();
     }
 
+    /** 免打扰缓冲因达到上限而被丢弃的累计条数（供状态端点与测试读取）。 */
+    public long droppedQuietCount() {
+        return droppedQuiet.get();
+    }
+
     /** 当前限流溢出缓冲的条目数（供测试断言其有界）。 */
-    int overflowSize() {
+    public int overflowSize() {
         synchronized (lock) {
             return overflow.size();
         }
     }
 
     /** 当前免打扰缓冲的条目数（供测试断言其有界）。 */
-    int quietBufferSize() {
+    public int quietBufferSize() {
         synchronized (lock) {
             return quietBuffer.size();
         }
+    }
+
+    /** 降噪层是否在运行（供状态端点读取）。 */
+    public boolean running() {
+        return running;
     }
 
     private void sendOnFlushThread(Runnable task) {

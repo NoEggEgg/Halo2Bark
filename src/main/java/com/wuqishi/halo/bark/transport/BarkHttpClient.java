@@ -3,6 +3,7 @@ package com.wuqishi.halo.bark.transport;
 import com.wuqishi.halo.bark.BarkConstants;
 import com.wuqishi.halo.bark.Masking;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -34,6 +35,15 @@ public class BarkHttpClient {
 
     /** 手动跟随重定向的最大跳数。 */
     private static final int MAX_REDIRECTS = 3;
+
+    /**
+     * 响应体读取上限（字节）。
+     *
+     * <p>Bark 的确认响应只有几百字节。若不设上限，异常或恶意的服务端可以返回一个超大响应体，
+     * 被整体读入内存并影响站点稳定性；超出部分截断后 JSON 解析会失败，按未预期失败处理——
+     * 是 fail closed，不会把「读不全的响应」当成投递成功。
+     */
+    private static final int MAX_RESPONSE_BYTES = 64 * 1024;
 
     private final HttpClient client;
 
@@ -82,12 +92,12 @@ public class BarkHttpClient {
                 .timeout(Duration.ofMillis(BarkConstants.REQUEST_TIMEOUT_MILLIS))
                 .method(method, body.get());
         headers.forEach(builder::header);
-        var response = client.send(builder.build(),
-                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        var response = client.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
 
         if (redirectsLeft > 0 && isRedirect(response.statusCode())) {
             var target = response.headers().firstValue("Location").map(uri::resolve).orElse(null);
             if (target != null && isHttp(target) && isSameOrigin(uri, target)) {
+                closeQuietly(response.body());
                 return send(target.toString(), method, body, headers, redirectsLeft - 1);
             }
             if (target != null) {
@@ -95,8 +105,33 @@ public class BarkHttpClient {
                         Masking.maskUrl(uri.toString()), Masking.maskUrl(target.toString()));
             }
         }
-        var responseBody = response.body();
-        return new BarkResponse(response.statusCode(), responseBody == null ? "" : responseBody);
+        String responseBody;
+        try (var stream = response.body()) {
+            responseBody = readLimited(stream);
+        }
+        return new BarkResponse(response.statusCode(), responseBody);
+    }
+
+    /** 最多读取 {@link #MAX_RESPONSE_BYTES} 字节，超出部分丢弃。 */
+    private static String readLimited(InputStream stream) throws IOException {
+        var buffer = new byte[MAX_RESPONSE_BYTES];
+        var total = 0;
+        while (total < buffer.length) {
+            var read = stream.read(buffer, total, buffer.length - total);
+            if (read < 0) {
+                break;
+            }
+            total += read;
+        }
+        return new String(buffer, 0, total, StandardCharsets.UTF_8);
+    }
+
+    private static void closeQuietly(InputStream stream) {
+        try {
+            stream.close();
+        } catch (IOException e) {
+            // 关闭重定向响应体失败不影响后续请求
+        }
     }
 
     private static boolean isRedirect(int status) {
