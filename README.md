@@ -4,7 +4,7 @@
 
 ![License](https://img.shields.io/github/license/NoEggEgg/Halo2Bark)
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-1.0.1-blue)
 
 把 Halo 站点的关键事件实时推送到 [Bark](https://github.com/Finb/Bark)，新评论、新回复和账号安全告警第一时间到 iPhone。
 
@@ -12,7 +12,7 @@
 > 📦 仓库：<https://github.com/NoEggEgg/Halo2Bark>  
 > 🐛 反馈：<https://github.com/NoEggEgg/Halo2Bark/issues>
 
-当前版本 **v1.0.0**，要求 Halo **2.26.0** 及以上。
+当前版本 **v1.0.1**，要求 Halo **2.26.0** 及以上。
 
 ## 特性
 
