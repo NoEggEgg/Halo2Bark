@@ -47,6 +47,7 @@ public class EventPipeline implements NotificationPipeline {
 
     @Override
     public void process(SiteEvent event, BarkSettings settings) {
+        boolean claimed = false;
         try {
             // 配置非法：停止投递。必须早于去重与判定——非法配置下任何推送都不得发生，
             // 尤其不能退回上一份（可能是明文）配置继续发送。
@@ -55,12 +56,14 @@ public class EventPipeline implements NotificationPipeline {
                 return;
             }
             clearBlocked();
-            // 先 peek（不标记）：投递成功后才标记，避免处理失败时事件被提前记为「已见」，
-            // 导致其窗口内重试副本被误丢。
-            if (deduplicator.isDuplicatePeek(event)) {
+            // Claim atomically before work; only mark seen after a successful handoff.
+            // An exception releases the claim so a later event can retry.
+            if (!deduplicator.tryClaim(event)) {
+                // Another worker owns this key, or it was recently handled.
                 log.debug("{} 丢弃窗口内重复事件：{}", BarkConstants.LOG_PREFIX, event);
                 return;
             }
+            claimed = true;
             var judged = judge.judge(event);
             if (judged.isEmpty()) {
                 log.debug("{} 判定为不通知：{}", BarkConstants.LOG_PREFIX, event);
@@ -82,6 +85,10 @@ public class EventPipeline implements NotificationPipeline {
             deduplicator.markSeen(event);
         } catch (RuntimeException e) {
             log.warn("{} 事件处理失败：{}", BarkConstants.LOG_PREFIX, Masking.sanitize(e.toString()));
+        } finally {
+            if (claimed) {
+                deduplicator.release(event);
+            }
         }
     }
 

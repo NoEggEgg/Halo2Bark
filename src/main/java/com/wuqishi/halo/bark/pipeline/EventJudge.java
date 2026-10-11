@@ -18,8 +18,15 @@ import run.halo.app.extension.Ref;
 /**
  * 事件判定：把 {@link SiteEvent} 判定为一条通知语义，或判定为「不通知」（PRD 4.3 的判定规则）。
  *
- * <p>规则 4/5（跳过历史对象、只处理创建）已由采集层的
- * {@link com.wuqishi.halo.bark.event.CreateReconciler} 保证，不在此重复。本类实现规则 1/2/3。
+ * <p>跳过历史对象与「只处理创建」由采集层的 {@link com.wuqishi.halo.bark.event.CreateReconciler}
+ * 保证，不在此重复。本类实现其余判定规则：
+ * <ol>
+ *   <li><b>操作者自身动作不通知</b>——评论者 / 回复者是站点操作者时直接判定为不通知
+ *       （{@link SiteOperatorRegistry}）。这条**必须最先执行**：它是唯一不依赖任何数据查询的规则，
+ *       且与评论主体类型无关，因此第三方评论主体、多作者站点下同样成立。</li>
+ *   <li>自己评论自己不通知、回复自己不通知——评论者 / 回复者就是被评论主体或被回复对象的作者。</li>
+ *   <li>「新评论」与「评论待审核」互斥。</li>
+ * </ol>
  *
  * <p>本类运行在**投递线程**（允许阻塞），因此可以读取扩展对象：被评论主体、被回复评论与被引用回复
  * 的作者。若把这些读取放在采集层，会让默认单线程的 Reconciler worker 承担 I/O 而串行化。
@@ -30,10 +37,13 @@ public class EventJudge {
 
     private final ExtensionClient client;
     private final CommentReviewSetting reviewSetting;
+    private final SiteOperatorRegistry operators;
 
-    public EventJudge(ExtensionClient client, CommentReviewSetting reviewSetting) {
+    public EventJudge(ExtensionClient client, CommentReviewSetting reviewSetting,
+            SiteOperatorRegistry operators) {
         this.client = client;
         this.reviewSetting = reviewSetting;
+        this.operators = operators;
     }
 
     /** @return 空表示该事件不应产生通知 */
@@ -48,8 +58,13 @@ public class EventJudge {
         };
     }
 
-    /** 规则 1：自己评论自己不通知；规则 3：新评论与评论待审核互斥。 */
+    /** 规则 1：操作者自身的评论不通知；规则 2：自己评论自己不通知；规则 3：新评论与待审核互斥。 */
     private Optional<Judgement> judgeComment(SiteEvent.CommentCreated comment) {
+        // 必须先于一切数据查询：操作者判定不依赖被评论主体，故第三方评论主体下同样成立
+        if (operators.isOperator(comment.ownerKind(), comment.ownerName())) {
+            log.debug("{} 操作者自身的评论，不通知：{}", BarkConstants.LOG_PREFIX, comment);
+            return Optional.empty();
+        }
         var subjectAuthor = new Author("User", subjectOwner(comment.subjectRef()));
         if (isSameAuthor(comment.ownerKind(), comment.ownerName(), subjectAuthor)) {
             return Optional.empty();
@@ -61,12 +76,18 @@ public class EventJudge {
     }
 
     /**
-     * 规则 2：回复自己不通知；与规则 1 同理，管理员（被评论主体作者）自己发起的回复也不通知。
+     * 规则 1：操作者自身的回复不通知；规则 2：回复自己不通知——与规则 1 同理，管理员
+     * （被评论主体作者）自己发起的回复也不通知。
      *
-     * <p>两处判定缺一不可：只看「被回复对象」会把管理员回复访客当成新回复推送；只看「主体作者」
-     * 又会让访客之间的互相回复漏推。
+     * <p>三处判定缺一不可：只看「被回复对象」会把管理员回复访客当成新回复推送；只看「主体作者」
+     * 又会让访客之间的互相回复漏推；而这两者都依赖数据查询，在第三方评论主体与多作者站点下取不到
+     * 主体作者，故需 {@link SiteOperatorRegistry} 兜底。
      */
     private Optional<Judgement> judgeReply(SiteEvent.ReplyCreated reply) {
+        if (operators.isOperator(reply.ownerKind(), reply.ownerName())) {
+            log.debug("{} 操作者自身的回复，不通知：{}", BarkConstants.LOG_PREFIX, reply);
+            return Optional.empty();
+        }
         if (isSameAuthor(reply.ownerKind(), reply.ownerName(), replieeOf(reply))) {
             return Optional.empty();
         }

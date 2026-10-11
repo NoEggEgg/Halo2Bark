@@ -49,7 +49,7 @@ public class BarkRequestSender {
         var attempt = 0;
         while (true) {
             attempt++;
-            var outcome = post(url, body);
+            var outcome = post(url, body, deviceKeys);
             if (outcome.success() || attempt > maxRetries || !outcome.retryable()) {
                 return outcome.withAttempts(attempt, elapsedMillis(startedAt));
             }
@@ -65,12 +65,25 @@ public class BarkRequestSender {
     }
 
     /** 单次请求；所有异常就地转换为失败分类，绝不外抛（PRD 10.4.3）。 */
-    private Outcome post(String url, String body) {
+    private Outcome post(String url, String body, List<String> deviceKeys) {
         try {
             var response = http.postJson(url, body);
             var status = response.status();
             if (status >= 200 && status < 300) {
-                return Outcome.ok();
+                var parsed = BarkPushResponse.parse(response.body(), deviceKeys);
+                if (parsed == null) {
+                    return Outcome.failed(DeliveryFailure.UNEXPECTED,
+                            DeliveryFailure.UNEXPECTED.describe("Invalid Bark acknowledgement or mismatched device results"));
+                }
+                if (parsed.code() >= 500) {
+                    return Outcome.failed(DeliveryFailure.SERVER_ERROR,
+                            DeliveryFailure.SERVER_ERROR.describe(parsed.code()));
+                }
+                if (parsed.code() != 200) {
+                    return Outcome.failed(DeliveryFailure.CLIENT_ERROR,
+                            DeliveryFailure.CLIENT_ERROR.describe(parsed.code()));
+                }
+                return Outcome.ok(parsed.deviceCodes());
             }
             if (status >= 500) {
                 return Outcome.failed(DeliveryFailure.SERVER_ERROR,
@@ -118,14 +131,15 @@ public class BarkRequestSender {
      * @param attempts 实际请求次数
      * @param elapsedMillis 总耗时
      */
-    public record Outcome(DeliveryFailure failure, String message, int attempts, long elapsedMillis) {
+    public record Outcome(DeliveryFailure failure, String message, int attempts, long elapsedMillis,
+                          List<Integer> deviceCodes) {
 
-        static Outcome ok() {
-            return new Outcome(null, "", 0, 0L);
+        static Outcome ok(List<Integer> deviceCodes) {
+            return new Outcome(null, "", 0, 0L, deviceCodes);
         }
 
         static Outcome failed(DeliveryFailure failure, String message) {
-            return new Outcome(failure, message == null ? "" : message, 0, 0L);
+            return new Outcome(failure, message == null ? "" : message, 0, 0L, List.of());
         }
 
         boolean success() {
@@ -137,7 +151,7 @@ public class BarkRequestSender {
         }
 
         Outcome withAttempts(int attempts, long elapsedMillis) {
-            return new Outcome(failure, message, attempts, elapsedMillis);
+            return new Outcome(failure, message, attempts, elapsedMillis, deviceCodes);
         }
     }
 }

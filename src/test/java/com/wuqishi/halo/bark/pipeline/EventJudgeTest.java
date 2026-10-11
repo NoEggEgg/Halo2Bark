@@ -17,12 +17,18 @@ import run.halo.app.core.extension.content.SinglePage;
 import run.halo.app.extension.ExtensionClient;
 import run.halo.app.extension.Ref;
 
-@DisplayName("事件判定：自己评论自己 / 回复自己 / 待审核互斥")
+@DisplayName("事件判定：操作者自身 / 自己评论自己 / 回复自己 / 待审核互斥")
 class EventJudgeTest {
 
     private final ExtensionClient client = mock(ExtensionClient.class);
     private final CommentReviewSetting reviewSetting = mock(CommentReviewSetting.class);
-    private final EventJudge judge = new EventJudge(client, reviewSetting);
+    private final SiteOperatorRegistry operators = mock(SiteOperatorRegistry.class);
+    private final EventJudge judge = new EventJudge(client, reviewSetting, operators);
+
+    /** 把某个登录用户标记为站点操作者（super-role）。 */
+    private void givenOperator(String username) {
+        when(operators.isOperator("User", username)).thenReturn(true);
+    }
 
     private static SiteEvent.SubjectRef postRef(String name) {
         return new SiteEvent.SubjectRef("content.halo.run", "v1alpha1", "Post", name);
@@ -288,6 +294,60 @@ class EventJudgeTest {
         var event = new SiteEvent.ReplyCreated("r-1", "c-9", "User", "alice", "Alice",
                 "reply", null, null);
         assertThat(judge.judge(event)).contains(Judgement.NEW_REPLY);
+    }
+
+    @Test
+    @DisplayName("操作者规则：管理员在第三方评论主体下发评论 → 不通知（取不到主体作者也能抑制）")
+    void operatorCommentOnUnknownSubjectIsNotNotified() {
+        givenOperator("alice");
+        when(reviewSetting.requireReviewForNew()).thenReturn(false);
+        var ref = new SiteEvent.SubjectRef("plugin.halo.run", "v1alpha1", "Plugin", "PluginLinks");
+        var event = new SiteEvent.CommentCreated("c-1", ref, "User", "alice", "Alice", "hi", false, null);
+        assertThat(judge.judge(event)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("操作者规则：管理员在第三方评论主体下回复 → 不通知")
+    void operatorReplyOnUnknownSubjectIsNotNotified() {
+        givenOperator("alice");
+        givenCommentOnSubject("c-9", "Email", "guest@example.com", "Moment", "m-1");
+        var event = new SiteEvent.ReplyCreated("r-1", "c-9", "User", "alice", "Alice",
+                "reply", null, null);
+        assertThat(judge.judge(event)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("操作者规则：管理员在他人文章下发评论 → 不通知（主体作者不是自己也能抑制）")
+    void operatorCommentOnOthersPostIsNotNotified() {
+        givenOperator("alice");
+        when(reviewSetting.requireReviewForNew()).thenReturn(false);
+        givenPostOwner("p-1", "bob");
+        var event = new SiteEvent.CommentCreated("c-1", postRef("p-1"), "User", "alice", "Alice",
+                "hi", false, null);
+        assertThat(judge.judge(event)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("操作者规则：管理员自己发的待审核评论 → 不通知（先于待审核判定）")
+    void operatorCommentIsNotJudgedPending() {
+        givenOperator("alice");
+        when(reviewSetting.requireReviewForNew()).thenReturn(true);
+        var event = new SiteEvent.CommentCreated("c-1", postRef("p-1"), "User", "alice", "Alice",
+                "hi", false, null);
+        assertThat(judge.judge(event)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("操作者规则：注册读者（非操作者）在第三方主体下评论与回复 → 照常通知，不误杀")
+    void registeredReaderOnUnknownSubjectIsStillNotified() {
+        when(reviewSetting.requireReviewForNew()).thenReturn(false);
+        var ref = new SiteEvent.SubjectRef("plugin.halo.run", "v1alpha1", "Plugin", "PluginLinks");
+        assertThat(judge.judge(new SiteEvent.CommentCreated("c-1", ref, "User", "reader", "读者",
+                "hi", false, null))).contains(Judgement.NEW_COMMENT);
+
+        givenCommentOnSubject("c-9", "Email", "guest@example.com", "Moment", "m-1");
+        assertThat(judge.judge(new SiteEvent.ReplyCreated("r-1", "c-9", "User", "reader", "读者",
+                "reply", null, null))).contains(Judgement.NEW_REPLY);
     }
 
     @Test

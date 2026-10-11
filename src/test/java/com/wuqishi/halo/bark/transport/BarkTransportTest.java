@@ -83,11 +83,119 @@ class BarkTransportTest {
     }
 
     @Test
+    void handlesPartialBatchAcknowledgementWithoutResendingSuccesses() {
+        server.respond(request -> {
+            if ("/info".equals(request.path())) {
+                return new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}");
+            }
+            if (request.body().contains("device_keys")) {
+                return new MockBarkServer.Response(200,
+                        "{\"code\":200,\"data\":[{\"device_key\":\"KEY1\",\"code\":200},"
+                                + "{\"device_key\":\"KEY2\",\"code\":400}]}");
+            }
+            return new MockBarkServer.Response(200, "{\"code\":400}");
+        });
+
+        var report = transport().send(notification(NotificationCategory.INTERACTIVE),
+                PushSettingsBuilder.push().build(), List.of(device("good", "KEY1", server.url()),
+                        device("bad", "KEY2", server.url())));
+
+        assertThat(report.successCount()).isEqualTo(1);
+        assertThat(report.failureCount()).isEqualTo(1);
+        assertThat(report.results().get(1).failure()).isEqualTo(DeliveryFailure.CLIENT_ERROR);
+        assertThat(pushRequests()).hasSize(2);
+        assertThat(pushRequests().get(1).body()).contains("\"device_key\":\"KEY2\"");
+    }
+
+    @Test
+    void reorderedBatchDeviceResultsAvoidResendingSuccesses() {
+        server.respond(request -> {
+            if ("/info".equals(request.path())) {
+                return new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}");
+            }
+            if (request.body().contains("device_keys")) {
+                return new MockBarkServer.Response(200,
+                        "{\"code\":200,\"data\":[{\"device_key\":\"KEY2\",\"code\":400},"
+                                + "{\"device_key\":\"KEY1\",\"code\":200}]}");
+            }
+            return new MockBarkServer.Response(200, request.body().contains("KEY2")
+                    ? "{\"code\":400}" : "{\"code\":200}");
+        });
+
+        var report = transport().send(notification(NotificationCategory.NORMAL),
+                PushSettingsBuilder.push().build(), List.of(device("one", "KEY1", server.url()),
+                        device("two", "KEY2", server.url())));
+
+        assertThat(report.successCount()).isEqualTo(1);
+        assertThat(report.failureCount()).isEqualTo(1);
+        assertThat(report.results().get(0).success()).isTrue();
+        assertThat(report.results().get(1).failure()).isEqualTo(DeliveryFailure.CLIENT_ERROR);
+        assertThat(pushRequests()).hasSize(2);
+        assertThat(pushRequests().get(1).body()).contains("\"device_key\":\"KEY2\"");
+    }
+
+    @Test
+    void blankHttpSuccessIsNotDeliverySuccess() {
+        server.respond(request -> "/info".equals(request.path())
+                ? new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}")
+                : new MockBarkServer.Response(200, ""));
+
+        var report = transport().send(notification(NotificationCategory.NORMAL),
+                PushSettingsBuilder.push().build(), List.of(device("phone", "KEY1", server.url())));
+
+        assertThat(report.results().get(0).failure()).isEqualTo(DeliveryFailure.UNEXPECTED);
+        assertThat(pushRequests()).hasSize(1);
+    }
+
+    @Test
+    void retriesBusinessServerErrorEvenWithHttpSuccess() {
+        respondInfo("v2.3.6");
+        server.respond(request -> "/info".equals(request.path())
+                ? new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}")
+                : new MockBarkServer.Response(200, "{\"code\":503}"));
+
+        var report = transport().send(notification(NotificationCategory.NORMAL),
+                PushSettingsBuilder.push().build(), List.of(device("phone", "KEY1", server.url())));
+
+        assertThat(report.results().get(0).failure()).isEqualTo(DeliveryFailure.SERVER_ERROR);
+        assertThat(report.results().get(0).attempts()).isEqualTo(3);
+        assertThat(pushRequests()).hasSize(3);
+    }
+
+    @Test
+    void rejectsInvalidAcknowledgementInsteadOfReportingSuccess() {
+        server.respond(request -> "/info".equals(request.path())
+                ? new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}")
+                : new MockBarkServer.Response(200, "{\"message\":\"success\"}"));
+
+        var report = transport().send(notification(NotificationCategory.NORMAL),
+                PushSettingsBuilder.push().build(), List.of(device("phone", "KEY1", server.url())));
+
+        assertThat(report.results().get(0).failure()).isEqualTo(DeliveryFailure.UNEXPECTED);
+        assertThat(pushRequests()).hasSize(1);
+    }
+
+    @Test
+    void fallsBackWhenBatchResponseDoesNotIdentifyAllDevices() {
+        server.respond(request -> "/info".equals(request.path())
+                ? new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}")
+                : new MockBarkServer.Response(200, "{\"code\":200}"));
+
+        var report = transport().send(notification(NotificationCategory.NORMAL),
+                PushSettingsBuilder.push().build(), List.of(device("one", "KEY1", server.url()),
+                        device("two", "KEY2", server.url())));
+
+        assertThat(report.allSucceeded()).isTrue();
+        assertThat(pushRequests()).hasSize(3);
+    }
+
+    @Test
     @DisplayName("不同服务地址各自独立投递")
     void splitsByServerUrl() {
         respondInfo("v2.3.6");
         try (var other = new MockBarkServer()) {
-            other.respond(request -> new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}"));
+            other.respond(request -> new MockBarkServer.Response(200, "/info".equals(request.path())
+                    ? "{\"version\":\"v2.3.6\"}" : "{\"code\":200}"));
 
             var report = transport().send(notification(NotificationCategory.INTERACTIVE),
                     PushSettingsBuilder.push().build(),
@@ -267,7 +375,11 @@ class BarkTransportTest {
     private void respondInfo(String version, int pushStatus) {
         server.respond(request -> "/info".equals(request.path())
                 ? new MockBarkServer.Response(200, "{\"version\":\"" + version + "\"}")
-                : new MockBarkServer.Response(pushStatus, "{\"code\":" + pushStatus + "}"));
+                : new MockBarkServer.Response(pushStatus,
+                        pushStatus == 200 && request.body().contains("device_keys")
+                                ? "{\"code\":200,\"data\":[{\"device_key\":\"KEY1\",\"code\":200},"
+                                        + "{\"device_key\":\"KEY2\",\"code\":200}]}"
+                                : "{\"code\":" + pushStatus + "}"));
     }
 
     private List<MockBarkServer.Request> pushRequests() {

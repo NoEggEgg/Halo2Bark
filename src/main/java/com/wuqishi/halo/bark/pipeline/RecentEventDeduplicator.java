@@ -5,6 +5,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.stereotype.Component;
 
@@ -28,6 +29,7 @@ public class RecentEventDeduplicator {
     private static final int PURGE_THRESHOLD = 512;
 
     private final Map<String, Instant> seen = new ConcurrentHashMap<>();
+    private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
     private final Clock clock;
 
     public RecentEventDeduplicator() {
@@ -78,6 +80,26 @@ public class RecentEventDeduplicator {
         if (seen.size() > PURGE_THRESHOLD) {
             purgeExpired(now);
         }
+    }
+
+    /** Reserve a key before processing so concurrent workers cannot both pass the peek check.
+     * A failed handoff must release the key without marking it seen, allowing a later retry.
+     */
+    public boolean tryClaim(SiteEvent event) {
+        var key = keyOf(event);
+        if (!inFlight.add(key)) {
+            return false;
+        }
+        if (isDuplicatePeek(event)) {
+            inFlight.remove(key);
+            return false;
+        }
+        return true;
+    }
+
+    /** Called after the handoff has succeeded or failed, respectively. */
+    public void release(SiteEvent event) {
+        inFlight.remove(keyOf(event));
     }
 
     private void purgeExpired(Instant now) {

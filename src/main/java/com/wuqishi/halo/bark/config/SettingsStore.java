@@ -71,7 +71,10 @@ public class SettingsStore {
     @EventListener
     public void onConfigUpdated(PluginConfigUpdatedEvent event) {
         // 捕获本次刷新的序号；结果到达时若已有更新的刷新，则丢弃本次，避免旧配置覆盖新配置。
-        long seq = latestSeq.incrementAndGet();
+        long seq;
+        synchronized (latestSeq) {
+            seq = latestSeq.incrementAndGet();
+        }
         load().subscribeOn(Schedulers.boundedElastic())
                 .subscribe(candidate -> applyIfLatest(seq, candidate),
                         e -> log.warn("{} 配置刷新失败，保留最后有效配置：{}",
@@ -85,11 +88,13 @@ public class SettingsStore {
      * 后发出的加载先完成会把较早（已过期）的配置写回。靠单调递增序号丢弃过期结果。
      */
     void applyIfLatest(long seq, BarkSettings candidate) {
-        if (seq != latestSeq.get()) {
-            log.debug("{} 丢弃过期配置刷新（序号 {}，已有更新刷新生效）", BarkConstants.LOG_PREFIX, seq);
-            return;
+        synchronized (latestSeq) {
+            if (seq != latestSeq.get()) {
+                log.debug("{} 丢弃过期配置刷新（序号 {}，已有更新刷新生效）", BarkConstants.LOG_PREFIX, seq);
+                return;
+            }
+            apply(candidate);
         }
-        apply(candidate);
     }
 
     private Mono<BarkSettings> load() {

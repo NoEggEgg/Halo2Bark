@@ -2,6 +2,8 @@ package com.wuqishi.halo.bark.pipeline;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -18,6 +20,9 @@ import com.wuqishi.halo.bark.content.SubjectResolver;
 import com.wuqishi.halo.bark.event.SiteEvent;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import run.halo.app.infra.ExternalLinkProcessor;
@@ -120,6 +125,46 @@ class EventPipelineTest {
         pipeline.process(event("c-1"), allEnabled());
 
         verify(noiseReducer, times(1)).accept(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("Concurrent copies cannot both enter delivery")
+    void concurrentCopiesAreClaimedOnlyOnce() throws Exception {
+        when(judge.judge(any())).thenReturn(Optional.of(Judgement.NEW_COMMENT));
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            entered.countDown();
+            assertThat(release.await(5, TimeUnit.SECONDS)).isTrue();
+            return null;
+        }).when(noiseReducer).accept(any(), any(), any());
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> pipeline.process(event("c-1"), allEnabled()));
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            var second = executor.submit(() -> pipeline.process(event("c-1"), allEnabled()));
+            second.get(5, TimeUnit.SECONDS);
+            release.countDown();
+            first.get(5, TimeUnit.SECONDS);
+            pipeline.process(event("c-1"), allEnabled());
+            verify(noiseReducer, times(1)).accept(any(), any(), any());
+        } finally {
+            release.countDown();
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("Failed handoff releases claim for subsequent retry")
+    void failedHandoffCanRetry() {
+        when(judge.judge(any())).thenReturn(Optional.of(Judgement.NEW_COMMENT));
+        doThrow(new IllegalStateException("boom")).doNothing()
+                .when(noiseReducer).accept(any(), any(), any());
+
+        pipeline.process(event("c-1"), allEnabled());
+        pipeline.process(event("c-1"), allEnabled());
+
+        verify(noiseReducer, times(2)).accept(any(), any(), any());
     }
 
     @Test

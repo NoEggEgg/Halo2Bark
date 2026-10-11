@@ -116,11 +116,17 @@ public class BarkTransport implements NotificationDelivery {
             }
             var keys = deviceGroup.stream().map(DeviceSetting::key).toList();
             var batch = attempt(context, serverUrl, keys, v2);
-            if (batch.success()) {
-                return deviceGroup.stream()
-                        .map(device -> DeviceResult.ok(device.name(), batch.attempts(),
-                                batch.elapsedMillis()))
-                        .toList();
+            if (batch.success() && batch.deviceCodes().size() == deviceGroup.size()) {
+                var results = new ArrayList<DeviceResult>(deviceGroup.size());
+                for (int i = 0; i < deviceGroup.size(); i++) {
+                    var device = deviceGroup.get(i);
+                    // Bark may return HTTP 200 while individual devices fail. Never resend
+                    // devices the server already acknowledged successfully.
+                    results.add(batch.deviceCodes().get(i) == 200
+                            ? DeviceResult.ok(device.name(), batch.attempts(), batch.elapsedMillis())
+                            : deliverOne(context, serverUrl, device, v2));
+                }
+                return results;
             }
             if (!worthDegrading(batch)) {
                 return deviceGroup.stream()
