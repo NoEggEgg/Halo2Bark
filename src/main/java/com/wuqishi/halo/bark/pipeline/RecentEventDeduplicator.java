@@ -82,8 +82,11 @@ public class RecentEventDeduplicator {
         }
     }
 
-    /** Reserve a key before processing so concurrent workers cannot both pass the peek check.
-     * A failed handoff must release the key without marking it seen, allowing a later retry.
+    /**
+     * 在处理前占住该事件的键，使并发投递线程不会同时通过重复判定。
+     *
+     * <p>占位失败（返回 {@code false}）时不标记已见：交给调用方在投递成功后调用
+     * {@link #markSeen}，投递失败则调用 {@link #release} 释放占位，让窗口内的重试副本仍可处理。
      */
     public boolean tryClaim(SiteEvent event) {
         var key = keyOf(event);
@@ -97,7 +100,7 @@ public class RecentEventDeduplicator {
         return true;
     }
 
-    /** Called after the handoff has succeeded or failed, respectively. */
+    /** 释放占位：投递成功后与 {@link #markSeen} 搭配使用，失败时单独调用以允许后续重试。 */
     public void release(SiteEvent event) {
         inFlight.remove(keyOf(event));
     }
