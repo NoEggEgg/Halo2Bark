@@ -41,26 +41,6 @@ public class RecentEventDeduplicator {
     }
 
     /**
-     * @return {@code true} 表示该事件在窗口内已出现过，应当丢弃
-     */
-    public boolean isDuplicate(SiteEvent event) {
-        var now = clock.instant();
-        var key = keyOf(event);
-        // 用 compute 把「读旧值 + 写新值」原子化，并以单调方式推进时间戳：并发下不回退到更早的
-        // 时间戳，否则旧时间戳覆盖新时间戳会让本应判为重复的后续事件漏判。
-        var box = new Instant[1];
-        seen.compute(key, (k, v) -> {
-            box[0] = v;
-            return (v != null && v.isAfter(now)) ? v : now;
-        });
-        if (seen.size() > PURGE_THRESHOLD) {
-            purgeExpired(now);
-        }
-        var previous = box[0];
-        return previous != null && Duration.between(previous, now).compareTo(WINDOW) < 0;
-    }
-
-    /**
      * 仅判定是否为窗口内重复（不记录）。供「投递成功后再标记」的调用方使用：在判定 / 适配 / 投递
      * 之前先 peek，避免处理失败时把事件提前标记为已见、导致其窗口内重试副本被误丢。
      */

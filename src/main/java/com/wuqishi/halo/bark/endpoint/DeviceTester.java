@@ -14,6 +14,7 @@ import com.wuqishi.halo.bark.transport.DeliveryFailure;
 import com.wuqishi.halo.bark.transport.DeliveryReport;
 import com.wuqishi.halo.bark.transport.DeviceResult;
 import com.wuqishi.halo.bark.transport.ServerInfo;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -51,14 +52,16 @@ public class DeviceTester {
     private final Supplier<PushSettings> settings;
     private final Supplier<List<String>> configIssues;
     private final SecretAccessor secretAccessor;
+    private final Clock clock;
 
     public DeviceTester(BarkServerProbe probe, BarkTransport transport, Supplier<PushSettings> settings,
-            Supplier<List<String>> configIssues, SecretAccessor secretAccessor) {
+            Supplier<List<String>> configIssues, SecretAccessor secretAccessor, Clock clock) {
         this.probe = probe;
         this.transport = transport;
         this.settings = settings;
         this.configIssues = configIssues;
         this.secretAccessor = secretAccessor;
+        this.clock = clock;
     }
 
     /**
@@ -179,7 +182,7 @@ public class DeviceTester {
 
     /** 构造固定测试消息：不归档，分级为普通（不受静默 / 合并 / 限流约束）。 */
     private PushNotification buildTestNotification(DeviceSetting device) {
-        var now = SEND_TIME.format(LocalDateTime.now());
+        var now = SEND_TIME.format(LocalDateTime.now(clock));
         return new PushNotification(
                 "🔔 Halo2Bark 测试通知",
                 device.name(),

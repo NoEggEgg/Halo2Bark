@@ -14,6 +14,7 @@ import com.wuqishi.halo.bark.transport.BarkServerProbe;
 import com.wuqishi.halo.bark.transport.BarkTransport;
 import com.wuqishi.halo.bark.transport.PayloadEncryptor;
 import com.wuqishi.halo.bark.transport.SiteBrandSupplier;
+import java.time.Clock;
 import java.util.List;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
@@ -136,6 +137,7 @@ class BarkTestEndpointTest {
         };
         var transport = new BarkTransport(probe, factory, noBrand, sender);
         Supplier<PushSettings> supplier = () -> settings;
-        return new DeviceTester(probe, transport, supplier, List::of, FakeSecretAccessor.identity());
+        return new DeviceTester(probe, transport, supplier, List::of, FakeSecretAccessor.identity(),
+                Clock.systemUTC());
     }
 }

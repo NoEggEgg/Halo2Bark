@@ -18,6 +18,7 @@ import com.wuqishi.halo.bark.transport.BarkServerProbe;
 import com.wuqishi.halo.bark.transport.BarkTransport;
 import com.wuqishi.halo.bark.transport.PayloadEncryptor;
 import com.wuqishi.halo.bark.transport.SiteBrandSupplier;
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -261,6 +262,7 @@ class DeviceTesterTest {
         };
         var transport = new BarkTransport(probe, factory, noBrand, sender);
         Supplier<PushSettings> supplier = () -> settings;
-        return new DeviceTester(probe, transport, supplier, () -> configIssues, secretAccessor);
+        return new DeviceTester(probe, transport, supplier, () -> configIssues, secretAccessor,
+                Clock.systemUTC());
     }
 }

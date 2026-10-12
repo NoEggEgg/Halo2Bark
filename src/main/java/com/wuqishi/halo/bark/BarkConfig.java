@@ -3,6 +3,7 @@ package com.wuqishi.halo.bark;
 import com.wuqishi.halo.bark.config.BarkSettings;
 import com.wuqishi.halo.bark.config.PushSettings;
 import com.wuqishi.halo.bark.config.SettingsStore;
+import java.time.Clock;
 import java.util.List;
 import java.util.function.Supplier;
 import org.springframework.context.annotation.Bean;
@@ -29,6 +30,17 @@ public class BarkConfig {
     @Bean
     Supplier<BarkSettings> barkSettingsSupplier(SettingsStore settingsStore) {
         return settingsStore::current;
+    }
+
+    /**
+     * 插件级时钟。
+     *
+     * <p>统一由容器提供而非各组件自取 {@code Clock.system*()}：测试可换装固定时钟，
+     * 使时间相关输出（如测试通知的「发送时间」）可断言。
+     */
+    @Bean
+    Clock clock() {
+        return Clock.systemDefaultZone();
     }
 
     /**
