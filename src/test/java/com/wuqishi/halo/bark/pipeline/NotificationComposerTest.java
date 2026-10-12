@@ -280,6 +280,52 @@ class NotificationComposerTest {
     }
 
     @Test
+    @DisplayName("待审核评论：点击直达 Console 待审核列表（预选 approved=false 筛选）")
+    void pendingCommentLinksToConsoleReview() {
+        givenSubject("文章标题", "https://site/archives/p-1", "文章");
+
+        var notification = composer.compose(new SiteEvent.CommentCreated("c", null, "Email",
+                "a@b.c", "访客", "内容", false, COMMENTED_AT), Judgement.PENDING_COMMENT, 0);
+
+        assertThat(notification.url()).isEqualTo("/console/comments?approved=false");
+        assertThat(notification.title()).isEqualTo("🕓 评论待审核 · 文章");
+    }
+
+    @Test
+    @DisplayName("已通过的新评论：仍跳文章页看上下文，不进 Console")
+    void approvedCommentKeepsSubjectUrl() {
+        givenSubject("文章标题", "https://site/archives/p-1", "文章");
+
+        var notification = composer.compose(new SiteEvent.CommentCreated("c", null, "Email",
+                "a@b.c", "访客", "内容", false, COMMENTED_AT), Judgement.NEW_COMMENT, 0);
+
+        assertThat(notification.url()).isEqualTo("https://site/archives/p-1");
+    }
+
+    @Test
+    @DisplayName("文章删除：原链接已死，点击直达回收站")
+    void removedPostLinksToTrash() {
+        givenSubject("被删文章", "https://site/archives/dead", "");
+
+        var notification = composer.compose(new SiteEvent.PostChanged("p-1",
+                SiteEvent.PostChange.DELETED), Judgement.POST_REMOVED, 0);
+
+        assertThat(notification.url()).isEqualTo("/console/posts/deleted");
+        assertThat(notification.title()).isEqualTo("🗑️ 文章已删除或取消发布");
+    }
+
+    @Test
+    @DisplayName("文章发布：仍跳文章页")
+    void publishedPostKeepsSubjectUrl() {
+        givenSubject("新文章", "https://site/archives/new", "");
+
+        var notification = composer.compose(new SiteEvent.PostChanged("p-1",
+                SiteEvent.PostChange.PUBLISHED), Judgement.POST_PUBLISHED, 0);
+
+        assertThat(notification.url()).isEqualTo("https://site/archives/new");
+    }
+
+    @Test
     @DisplayName("截断会去掉尾随空白，避免「半句 + 省略号」的观感")
     void truncateStripsTrailingSpace() {
         assertThat(NotificationComposer.truncate("abcdef ghij", 8)).isEqualTo("abcdef…");

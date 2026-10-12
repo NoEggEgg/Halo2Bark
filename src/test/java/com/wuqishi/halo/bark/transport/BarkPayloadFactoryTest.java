@@ -369,4 +369,57 @@ class BarkPayloadFactoryTest {
                     .hasMessageContaining("16 个字节");
         }
     }
+
+    @Nested
+    @DisplayName("通知 id：相同 id 的推送在手机端更新替换原通知")
+    class NotificationId {
+
+        private static PushNotification withId(String id) {
+            return new PushNotification("标题", "", "正文", "", NotificationCategory.NORMAL,
+                    true, id);
+        }
+
+        @Test
+        @DisplayName("V2 携带 id：以字符串类型下发（官方要求 JSON 传参必须字符串）")
+        void carriesIdOnV2() {
+            var params = paramsOf(factory, withId("halo2bark-health-ab12cd34"),
+                    PushSettingsBuilder.push().build(), List.of("KEY1"), true);
+
+            assertThat(params).containsEntry("id", "halo2bark-health-ab12cd34");
+        }
+
+        @Test
+        @DisplayName("V1 回退不下发 id：保持 V1 参数集精简的既有口径")
+        void omitsIdOnV1() {
+            var params = paramsOf(factory, withId("halo2bark-health-ab12cd34"),
+                    PushSettingsBuilder.push().build(), List.of("KEY1"), false);
+
+            assertThat(params).doesNotContainKey("id");
+        }
+
+        @Test
+        @DisplayName("无 id 不下发")
+        void omitsWhenAbsent() {
+            var params = paramsOf(factory, notification(NotificationCategory.NORMAL),
+                    PushSettingsBuilder.push().build(), List.of("KEY1"), true);
+
+            assertThat(params).doesNotContainKey("id");
+        }
+
+        @Test
+        @DisplayName("加密推送时 id 随参数整体进入密文，不以明文出现")
+        void idGoesInsideCiphertext() throws com.wuqishi.halo.bark.transport.EncryptionException {
+            var settings = PushSettingsBuilder.push()
+                    .encryptEnabled(true)
+                    .encryptKey("1234567890123456")
+                    .build();
+
+            var body = factory.body(
+                    factory.params(withId("halo2bark-health-ab12cd34"), settings,
+                            List.of("KEY1"), "分组", ICON, true), settings);
+
+            assertThat(body).contains("ciphertext").contains("iv");
+            assertThat(body).doesNotContain("halo2bark-health-ab12cd34");
+        }
+    }
 }

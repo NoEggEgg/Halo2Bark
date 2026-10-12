@@ -29,7 +29,7 @@ class SummaryComposerTest {
                 item(Judgement.NEW_COMMENT, "文章标题", "甲：内容一", "https://site/p/1"),
                 item(Judgement.NEW_COMMENT, "文章标题", "乙：内容二", "https://site/p/1"));
 
-        var summary = SummaryComposer.merged(Judgement.NEW_COMMENT, items, 0);
+        var summary = SummaryComposer.merged(Judgement.NEW_COMMENT, items, 0, null);
 
         assertThat(summary.title()).isEqualTo("💬 2 条新评论");
         assertThat(summary.subtitle()).isEqualTo("文章标题");
@@ -44,7 +44,7 @@ class SummaryComposerTest {
                 item(Judgement.NEW_COMMENT, "文章A", "一", "https://site/p/1"),
                 item(Judgement.NEW_COMMENT, "文章B", "二", "https://site/p/2"));
 
-        var summary = SummaryComposer.merged(Judgement.NEW_COMMENT, items, 0);
+        var summary = SummaryComposer.merged(Judgement.NEW_COMMENT, items, 0, null);
 
         assertThat(summary.subtitle()).isEmpty();
         assertThat(summary.url()).isEmpty();
@@ -57,7 +57,7 @@ class SummaryComposerTest {
                 item(Judgement.NEW_COMMENT, "", "0123456789", ""),
                 item(Judgement.NEW_COMMENT, "", "0123456789", ""));
 
-        var summary = SummaryComposer.merged(Judgement.NEW_COMMENT, items, 10);
+        var summary = SummaryComposer.merged(Judgement.NEW_COMMENT, items, 10, null);
 
         assertThat(summary.body()).hasSize(10).endsWith("…");
     }

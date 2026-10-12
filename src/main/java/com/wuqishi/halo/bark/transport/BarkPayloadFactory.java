@@ -68,6 +68,14 @@ public class BarkPayloadFactory {
         params.put("body", notification.body());
         put(params, "markdown", notification.body());
         put(params, "url", notification.url());
+        // 通知唯一标识（官方 docs/params.md）：相同 id 的新推送在手机上更新替换原通知。
+        // JSON 传参必须为字符串；id 由 bark-server v2.2.5+ 处理，旧版服务端将其作为
+        // 普通自定义参数透传并被 App 忽略——最坏情况无替换效果，故可安全下发。
+        // 仅 V2 下发：V1 回退意味着服务端较旧，且保持 V1 参数集精简的既有口径。
+        // 已验证（bark-server route_push.go）：未知参数进入 APNs 自定义载荷，绝不报错。
+        if (v2 && notification.id() != null && !notification.id().isBlank()) {
+            params.put("id", notification.id());
+        }
 
         if (v2 && deviceKeys.size() > 1) {
             params.put("device_keys", List.copyOf(deviceKeys));

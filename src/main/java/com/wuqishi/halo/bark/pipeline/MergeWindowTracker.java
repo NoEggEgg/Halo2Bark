@@ -42,12 +42,15 @@ final class MergeWindowTracker {
      * 提交一条通知。
      *
      * @return 本次提交产生的动作；{@link Action#immediate()} 非空表示需立即送达，
-     *     {@link Action#merged()} 非空表示需合并为一条摘要后送达
+     *     {@link Action#merged()} 非空表示需合并为一条摘要后送达，
+     *     {@link Action#heldCount()} 为本条进入暂存后该窗口的暂存条数（未进暂存为 -1，
+     *     供「爆发温度计」判断爆发是否进行中）
      */
     Action submit(Judgement judgement, BufferedNotification item, PushSettings settings) {
         BufferedNotification immediate = null;
         List<BufferedNotification> merged = null;
         List<BufferedNotification> expiredSingles = List.of();
+        int heldCount = -1;
         synchronized (lock) {
             var now = clock.instant();
             var window = windows.get(judgement);
@@ -74,10 +77,12 @@ final class MergeWindowTracker {
                 if (window.held.size() >= MERGE_THRESHOLD - 1) {
                     merged = List.copyOf(window.held);
                     windows.put(judgement, new Window(now, window.duration));
+                } else {
+                    heldCount = window.held.size();
                 }
             }
         }
-        return new Action(immediate, merged, expiredSingles);
+        return new Action(immediate, merged, expiredSingles, heldCount);
     }
 
     /**
@@ -167,9 +172,10 @@ final class MergeWindowTracker {
      * @param merged 需合并为一条摘要的暂存条目；为 {@code null} 表示本次未触发合并
      * @param expiredSingles 因窗口到期而需按原样补发的单条（{@link #submit} 抢占了冲刷的工作）；
      *     未发生抢占时为空列表
+     * @param heldCount 本条进入暂存后该窗口的暂存条数；未进暂存（立即送达或已触发合并）为 -1
      */
     record Action(BufferedNotification immediate, List<BufferedNotification> merged,
-            List<BufferedNotification> expiredSingles) {
+            List<BufferedNotification> expiredSingles, int heldCount) {
     }
 
     /**

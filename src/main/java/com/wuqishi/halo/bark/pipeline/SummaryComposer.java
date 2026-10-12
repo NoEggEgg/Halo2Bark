@@ -32,9 +32,14 @@ final class SummaryComposer {
     private static final String OVERFLOW_TITLE = "🔔 近 1 分钟另有 %d 条通知已合并";
     private static final String QUIET_TITLE = "🌙 免打扰期间收到 %d 条通知";
 
-    /** 合并摘要：副标题与链接取「所有条目一致」的值，否则留空。 */
+    /**
+     * 合并摘要：副标题与链接取「所有条目一致」的值，否则留空。
+     *
+     * @param notificationId 通知唯一标识；非空时摘要携带该 id——若爆发进行中已推送过
+     *     「温度计」通知（同一 id），摘要会在手机上**原地替换**它，而不是新增一条
+     */
     static PushNotification merged(Judgement judgement, List<BufferedNotification> items,
-            int contentMaxLength) {
+            int contentMaxLength, String notificationId) {
         var first = items.get(0).notification();
         var title = MERGE_TITLES.getOrDefault(judgement, "🔔 %d 条通知").formatted(items.size());
         return new PushNotification(
@@ -43,7 +48,10 @@ final class SummaryComposer {
                 truncateBodies(items, contentMaxLength),
                 commonUrl(items),
                 first.category(),
-                true);
+                true,
+                "",
+                "",
+                notificationId);
     }
 
     /** 限流摘要：正文按事件类型归纳（如「2 条新评论 · 1 篇文章已发布」）。 */
