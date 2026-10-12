@@ -12,10 +12,3 @@
 
 - 需要 Halo 2.26.0 及以上，升级后无需重新配置。
 - 分批推送对自建服务同样生效，多一次请求的开销可忽略。
-
----
-
-🏠 主页：<https://wuqishi.com>
-📦 仓库：<https://github.com/NoEggEgg/Halo2Bark>
-🐛 反馈：<https://github.com/NoEggEgg/Halo2Bark/issues>
-⬇️ 下载：<https://github.com/NoEggEgg/Halo2Bark/releases/latest>
