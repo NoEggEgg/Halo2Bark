@@ -3,7 +3,9 @@ package com.wuqishi.halo.bark.transport;
 import com.wuqishi.halo.bark.BarkConstants;
 import com.wuqishi.halo.bark.Masking;
 import java.io.IOException;
+import java.net.URLEncoder;
 import java.net.http.HttpTimeoutException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 
@@ -44,7 +46,12 @@ public class BarkRequestSender {
     public Outcome send(String serverUrl, List<String> deviceKeys, String body, boolean v2,
             int maxRetries) {
         var base = stripTrailingSlash(serverUrl);
-        var url = v2 ? base + PUSH_PATH : base + "/" + deviceKeys.get(0);
+        // V1 的 Key 位于路径中：它来自管理员配置（「测试该设备」还允许未保存的表单值），
+        // 含 / ? # 空格等字符时会破坏 URL 结构或改变路径语义，必须编码后再拼接。
+        // URLEncoder 是查询串口径（空格 → +），但路径段中的 + 是合法字面量，
+        // 且带空格的 Key 本就是无效凭据——这里追求的是结构安全而非语义还原。
+        var url = v2 ? base + PUSH_PATH : base + "/" + URLEncoder.encode(deviceKeys.get(0),
+                StandardCharsets.UTF_8);
         var startedAt = System.nanoTime();
         var attempt = 0;
         while (true) {
