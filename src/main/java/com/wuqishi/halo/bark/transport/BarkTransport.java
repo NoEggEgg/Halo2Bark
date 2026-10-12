@@ -24,7 +24,8 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li>服务地址是设备级配置，因此先按 {@code serverUrl} 分组——
  *       {@code device_keys} 批量推送要求所有设备属于同一服务端，跨服务端无法批量。</li>
- *   <li>同一地址下可投递设备 ≥ 2 且服务端支持 V2 → 一次批量请求。</li>
+ *   <li>同一地址下可投递设备 ≥ 2 且服务端支持 V2 → 批量请求，按
+ *       {@link BarkConstants#BARK_BATCH_LIMIT} 分片（官方服务限制单次批量 10 个 key）。</li>
  *   <li>批量请求失败 → 该地址内降级为逐设备重试，保证失败隔离；其他地址不受影响。</li>
  *   <li>服务端不支持 V2 → 回退 V1，V1 无批量能力，一律逐设备。</li>
  * </ul>
@@ -128,7 +129,13 @@ public class BarkTransport implements NotificationDelivery {
     public record LastDelivery(Instant at, int deviceCount, long successCount, long failureCount) {
     }
 
-    /** 投递同一个服务地址下的设备。 */
+    /**
+     * 投递同一个服务地址下的设备。
+     *
+     * <p>支持 V2 且设备数 &gt; 1 时按批量分片投递：Bark 官方服务限制单次批量最多
+     * {@link BarkConstants#BARK_BATCH_LIMIT} 个 {@code device_keys}（自建无上限），
+     * 统一分片使官方与自建行为一致。每个分片内部保持完整的「批量 → 降级逐设备」语义。
+     */
     private List<DeviceResult> deliverGroup(DeliveryContext context, String serverUrl,
             List<DeviceSetting> deviceGroup) {
         try {
@@ -138,32 +145,13 @@ public class BarkTransport implements NotificationDelivery {
                         .map(device -> deliverOne(context, serverUrl, device, v2))
                         .toList();
             }
-            var keys = deviceGroup.stream().map(DeviceSetting::key).toList();
-            var batch = attempt(context, serverUrl, keys, v2);
-            if (batch.success() && batch.deviceCodes().size() == deviceGroup.size()) {
-                var results = new ArrayList<DeviceResult>(deviceGroup.size());
-                for (int i = 0; i < deviceGroup.size(); i++) {
-                    var device = deviceGroup.get(i);
-                    // Bark may return HTTP 200 while individual devices fail. Never resend
-                    // devices the server already acknowledged successfully.
-                    results.add(batch.deviceCodes().get(i) == 200
-                            ? DeviceResult.ok(device.name(), batch.attempts(), batch.elapsedMillis())
-                            : deliverOne(context, serverUrl, device, v2));
-                }
-                return results;
+            var results = new ArrayList<DeviceResult>(deviceGroup.size());
+            for (int start = 0; start < deviceGroup.size(); start += BarkConstants.BARK_BATCH_LIMIT) {
+                var chunk = deviceGroup.subList(start,
+                        Math.min(start + BarkConstants.BARK_BATCH_LIMIT, deviceGroup.size()));
+                results.addAll(deliverBatchChunk(context, serverUrl, chunk, v2));
             }
-            if (!worthDegrading(batch)) {
-                return deviceGroup.stream()
-                        .map(device -> DeviceResult.failed(device.name(), batch.failure(),
-                                batch.message(), batch.attempts(), batch.elapsedMillis()))
-                        .toList();
-            }
-            log.debug("{} 批量投递失败，该地址降级为逐设备重试：设备数={} 服务={} 原因={}",
-                    BarkConstants.LOG_PREFIX, deviceGroup.size(), Masking.maskUrl(serverUrl),
-                    batch.failure());
-            return deviceGroup.stream()
-                    .map(device -> deliverOne(context, serverUrl, device, v2))
-                    .toList();
+            return results;
         } catch (RuntimeException e) {
             var detail = Masking.sanitize(e.toString());
             log.warn("{} 投递服务 {} 时发生未预期异常：{}", BarkConstants.LOG_PREFIX,
@@ -173,6 +161,41 @@ public class BarkTransport implements NotificationDelivery {
                             DeliveryFailure.UNEXPECTED.describe(detail), 0, 0L))
                     .toList();
         }
+    }
+
+    /**
+     * 投递一个批量分片（≤ {@link BarkConstants#BARK_BATCH_LIMIT} 台设备）。
+     *
+     * <p>分片内的失败语义与原批量路径一致：逐设备确认结果不重发已成功者；
+     * 批量失败且值得降级时逐设备重试；加密错误与超时不降级（前者重复无意义，后者宁漏不重）。
+     */
+    private List<DeviceResult> deliverBatchChunk(DeliveryContext context, String serverUrl,
+            List<DeviceSetting> chunk, boolean v2) {
+        var keys = chunk.stream().map(DeviceSetting::key).toList();
+        var batch = attempt(context, serverUrl, keys, v2);
+        if (batch.success() && batch.deviceCodes().size() == chunk.size()) {
+            var results = new ArrayList<DeviceResult>(chunk.size());
+            for (int i = 0; i < chunk.size(); i++) {
+                var device = chunk.get(i);
+                // Bark may return HTTP 200 while individual devices fail. Never resend
+                // devices the server already acknowledged successfully.
+                results.add(batch.deviceCodes().get(i) == 200
+                        ? DeviceResult.ok(device.name(), batch.attempts(), batch.elapsedMillis())
+                        : deliverOne(context, serverUrl, device, v2));
+            }
+            return results;
+        }
+        if (!worthDegrading(batch)) {
+            return chunk.stream()
+                    .map(device -> DeviceResult.failed(device.name(), batch.failure(),
+                            batch.message(), batch.attempts(), batch.elapsedMillis()))
+                    .toList();
+        }
+        log.debug("{} 批量投递失败，该地址降级为逐设备重试：设备数={} 服务={} 原因={}",
+                BarkConstants.LOG_PREFIX, chunk.size(), Masking.maskUrl(serverUrl), batch.failure());
+        return chunk.stream()
+                .map(device -> deliverOne(context, serverUrl, device, v2))
+                .toList();
     }
 
     /** 投递单台设备。 */

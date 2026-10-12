@@ -83,6 +83,46 @@ class BarkTransportTest {
     }
 
     @Test
+    @DisplayName("同址设备超过官方批量上限时按 10 台一片分批投递")
+    void chunksBatchesBeyondOfficialLimit() {
+        server.respond(request -> "/info".equals(request.path())
+                ? new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}")
+                : new MockBarkServer.Response(200, ackAll(request.body())));
+
+        var devices = new ArrayList<DeviceSetting>();
+        for (int i = 1; i <= 12; i++) {
+            devices.add(device("设备" + i, "KEY" + i, server.url()));
+        }
+
+        var report = transport().send(notification(NotificationCategory.INTERACTIVE),
+                PushSettingsBuilder.push().build(), devices);
+
+        assertThat(report.allSucceeded()).isTrue();
+        assertThat(report.results()).hasSize(12);
+        // Bark 官方服务限制单次批量最多 10 个 device_keys：12 台 = 10 + 2 两次批量请求
+        var batches = pushRequests();
+        assertThat(batches).hasSize(2);
+        assertThat(batches.get(0).body()).contains("\"device_keys\":[\"KEY1\"");
+        assertThat(batches.get(0).body()).doesNotContain("KEY11");
+        assertThat(batches.get(1).body()).contains("\"device_keys\":[\"KEY11\",\"KEY12\"]");
+    }
+
+    /** 构造对请求体中每个 {@code device_key} 均确认 200 的 V2 批量应答。 */
+    private static String ackAll(String body) {
+        var matcher = java.util.regex.Pattern.compile("\"KEY\\d+\"").matcher(body);
+        var builder = new StringBuilder("{\"code\":200,\"data\":[");
+        var first = true;
+        while (matcher.find()) {
+            if (!first) {
+                builder.append(',');
+            }
+            builder.append("{\"device_key\":").append(matcher.group()).append(",\"code\":200}");
+            first = false;
+        }
+        return builder.append("]}").toString();
+    }
+
+    @Test
     void handlesPartialBatchAcknowledgementWithoutResendingSuccesses() {
         server.respond(request -> {
             if ("/info".equals(request.path())) {

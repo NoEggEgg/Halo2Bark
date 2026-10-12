@@ -58,6 +58,15 @@ public final class BarkConstants {
     public static final long SECONDS_PER_DAY = 86_400L;
 
     /**
+     * 单次批量推送的 {@code device_keys} 数量上限。
+     *
+     * <p>Bark 官方参数文档（docs/params.md）明确：「公共服务器一次最多 10 个设备，自建服务器无上限」。
+     * 插件允许配置最多 20 台设备且默认指向官方服务，若不分片，11~20 台同址设备会超出官方限制。
+     * 统一按 10 分片：自建服务多一次请求的成本可忽略，换来所有服务端行为一致、可预期。
+     */
+    public static final int BARK_BATCH_LIMIT = 10;
+
+    /**
      * 投递队列容量上限。
      *
      * <p>队列有界是硬要求（PRD 5.1、10.4.1）：溢出时按「丢弃优先级最低且最旧」处理并计数，
