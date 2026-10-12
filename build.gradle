@@ -6,7 +6,7 @@ plugins {
 }
 
 group = 'com.wuqishi.halo.bark'
-version = '1.0.2'
+version = '1.1.0'
 
 repositories {
     maven {
