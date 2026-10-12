@@ -415,6 +415,85 @@ class BarkTransportTest {
         assertThat(brand.logoCalls).isEqualTo(1);
     }
 
+    @Test
+    @DisplayName("健康告警：同址一失败一成功时，告警经成功设备送达且携带设备指纹 id")
+    void healthAlertGoesThroughHealthyDevice() {
+        server.respond(request -> {
+            if ("/info".equals(request.path())) {
+                return new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}");
+            }
+            if (request.body().contains("device_keys")) {
+                return new MockBarkServer.Response(200,
+                        "{\"code\":200,\"data\":[{\"device_key\":\"KEY1\",\"code\":400},"
+                                + "{\"device_key\":\"KEY2\",\"code\":200}]}");
+            }
+            // 甲（KEY1）的所有单推都失败：批量部分失败后的逐设备重试同样不成功
+            if (request.body().contains("KEY1")) {
+                return new MockBarkServer.Response(400, "{\"code\":400}");
+            }
+            return new MockBarkServer.Response(200, "{\"code\":200}");
+        });
+        var devices = List.of(device("甲", "KEY1", server.url()), device("乙", "KEY2", server.url()));
+        var settings = PushSettingsBuilder.push().build();
+
+        // 连续两轮「甲失败 / 乙成功」：第一轮仅计数，第二轮达到阈值产出告警。
+        // 健康状态在 transport 实例内，两轮必须复用同一实例。
+        var transport = transport();
+        transport.send(notification(NotificationCategory.INTERACTIVE), settings, devices);
+        var report = transport.send(notification(NotificationCategory.INTERACTIVE), settings, devices);
+
+        assertThat(report.successCount()).isEqualTo(1);
+        // 请求序列：两轮各「批量 + 甲逐设备失败」，告警经乙（KEY2）单推
+        assertThat(pushRequests()).hasSize(5);
+        var alertBody = pushRequests().get(4).body();
+        assertThat(alertBody).contains("📵").contains("device_key\":\"KEY2\"");
+        assertThat(alertBody).containsPattern("halo2bark-health-[0-9a-f]{8}");
+        assertThat(alertBody).doesNotContain("KEY1");
+    }
+
+    @Test
+    @DisplayName("健康恢复：失败设备恢复后，恢复通知以同一 id 发往该设备")
+    void healthRecoveryReplacesAlertOnSameDevice() {
+        // 甲的前两轮单推失败（对应两轮事件），第三轮起恢复成功——模拟故障后修复
+        var key1SinglePushes = new java.util.concurrent.atomic.AtomicInteger();
+        server.respond(request -> {
+            if ("/info".equals(request.path())) {
+                return new MockBarkServer.Response(200, "{\"version\":\"v2.3.6\"}");
+            }
+            if (request.body().contains("device_keys")) {
+                return new MockBarkServer.Response(200,
+                        "{\"code\":200,\"data\":[{\"device_key\":\"KEY1\",\"code\":400},"
+                                + "{\"device_key\":\"KEY2\",\"code\":200}]}");
+            }
+            if (request.body().contains("KEY1") && key1SinglePushes.incrementAndGet() <= 2) {
+                return new MockBarkServer.Response(400, "{\"code\":400}");
+            }
+            return new MockBarkServer.Response(200, "{\"code\":200}");
+        });
+        var both = List.of(device("甲", "KEY1", server.url()), device("乙", "KEY2", server.url()));
+        var settings = PushSettingsBuilder.push().build();
+        // 两轮失败达到告警阈值：0 批量、1 甲重推、2 批量、3 甲重推、4 告警（经乙）
+        var transport = transport();
+        transport.send(notification(NotificationCategory.INTERACTIVE), settings, both);
+        transport.send(notification(NotificationCategory.INTERACTIVE), settings, both);
+        var alertMatcher = java.util.regex.Pattern.compile("halo2bark-health-[0-9a-f]{8}")
+                .matcher(pushRequests().get(4).body());
+        assertThat(alertMatcher.find()).isTrue();
+        var alertId = alertMatcher.group();
+
+        // 甲恢复：仅甲参与本轮投递，恢复通知发往甲且 id 与告警一致（原地替换）
+        var report = transport.send(notification(NotificationCategory.INTERACTIVE), settings,
+                List.of(device("甲", "KEY1", server.url())));
+
+        assertThat(report.allSucceeded()).isTrue();
+        // 请求序列（累计）：… 4 告警、5 甲事件成功、6 恢复通知
+        assertThat(pushRequests()).hasSize(7);
+        assertThat(pushRequests().get(5).body()).contains("device_key\":\"KEY1\"");
+        var recoveryBody = pushRequests().get(6).body();
+        assertThat(recoveryBody).contains("✅").contains("device_key\":\"KEY1\"");
+        assertThat(recoveryBody).contains(alertId);
+    }
+
     private BarkTransport transport() {
         return transportWith(new Brand("", ""));
     }

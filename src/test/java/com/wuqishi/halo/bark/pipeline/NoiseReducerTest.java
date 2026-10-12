@@ -120,7 +120,7 @@ class NoiseReducerTest {
     }
 
     @Test
-    @DisplayName("前 2 条立即送达；第 3、4 条暂存后合并为一条摘要")
+    @DisplayName("前 2 条立即送达；第 3 条推送爆发温度计；第 4 条触发摘要并以同 id 替换温度计")
     void mergesAfterThreshold() {
         var settings = PushSettings.defaults();
 
@@ -129,12 +129,20 @@ class NoiseReducerTest {
         assertThat(delivered).hasSize(2);
 
         accept("三", NotificationCategory.INTERACTIVE, settings);
-        assertThat(delivered).hasSize(2);
+        // 第 3 条进入暂存：温度计直接送达（不占限流配额），id 固定按判定语义
+        assertThat(delivered).hasSize(3);
+        var thermometer = delivered.get(2);
+        assertThat(thermometer.title()).isEqualTo("🔥 评论爆发中");
+        assertThat(thermometer.id()).isEqualTo("halo2bark-burst-new_comment");
+
         accept("四", NotificationCategory.INTERACTIVE, settings);
 
-        awaitDelivered(3);
-        assertThat(delivered).hasSize(3);
-        assertThat(delivered.get(2).title()).isEqualTo("💬 2 条新评论");
+        awaitDelivered(4);
+        assertThat(delivered).hasSize(4);
+        var summary = delivered.get(3);
+        assertThat(summary.title()).isEqualTo("💬 2 条新评论");
+        // 摘要携带温度计的 id：手机端原地替换过程通知，整场爆发只占一条
+        assertThat(summary.id()).isEqualTo("halo2bark-burst-new_comment");
     }
 
     @Test
@@ -144,14 +152,15 @@ class NoiseReducerTest {
         accept("一", NotificationCategory.INTERACTIVE, settings);
         accept("二", NotificationCategory.INTERACTIVE, settings);
         accept("三", NotificationCategory.INTERACTIVE, settings);
-        assertThat(delivered).hasSize(2);
+        assertThat(delivered).hasSize(3); // 含温度计
 
         clock.advance(Duration.ofMinutes(10));
         reducer.sweep();
 
-        awaitDelivered(3);
-        assertThat(delivered).hasSize(3);
-        assertThat(delivered.get(2).title()).isEqualTo("三");
+        awaitDelivered(4);
+        assertThat(delivered).hasSize(4);
+        assertThat(delivered.get(3).title()).isEqualTo("三");
+        assertThat(delivered.get(3).id()).isEmpty();
     }
 
     @Test
@@ -165,14 +174,40 @@ class NoiseReducerTest {
                     settings);
         }
         settle(); // 合并摘要走补发执行器，等它在本分钟内完成配额判定后再推进时钟
-        assertThat(delivered).hasSize(2);
+        assertThat(delivered).hasSize(3); // 2 条即时 + 温度计（不占配额）
 
         clock.advance(Duration.ofMinutes(1).plusSeconds(1));
         limited.sweep();
 
-        awaitDelivered(3);
-        assertThat(delivered).hasSize(3);
-        assertThat(delivered.get(2).title()).startsWith("🔔 近 1 分钟另有");
+        awaitDelivered(4);
+        assertThat(delivered).hasSize(4);
+        assertThat(delivered.get(3).title()).startsWith("🔔 近 1 分钟另有");
+        // 溢出摘要替换温度计：整场爆发（含被限流的部分）只占一条通知
+        assertThat(delivered.get(3).id()).isEqualTo("halo2bark-burst-new_comment");
+    }
+
+    @Test
+    @DisplayName("温度计一次爆发只发一条；爆发以单条到期收场后解除登记，下一波重新触发")
+    void thermometerFiresOncePerEpisodeAndResets() {
+        var settings = PushSettings.defaults();
+        accept("一", NotificationCategory.INTERACTIVE, settings);
+        accept("二", NotificationCategory.INTERACTIVE, settings);
+        accept("三", NotificationCategory.INTERACTIVE, settings);
+
+        clock.advance(Duration.ofMinutes(10));
+        reducer.sweep();
+        awaitDelivered(4);
+
+        // 下一波爆发：温度计以同一 id 再次触发（替换上一波的残留通知）
+        accept("一2", NotificationCategory.INTERACTIVE, settings);
+        accept("二2", NotificationCategory.INTERACTIVE, settings);
+        accept("三2", NotificationCategory.INTERACTIVE, settings);
+
+        var thermometers = delivered.stream()
+                .filter(n -> "🔥 评论爆发中".equals(n.title()))
+                .toList();
+        assertThat(thermometers).hasSize(2);
+        assertThat(thermometers.get(1).id()).isEqualTo(thermometers.get(0).id());
     }
 
     @Test
@@ -182,7 +217,7 @@ class NoiseReducerTest {
         accept("一", NotificationCategory.INTERACTIVE, settings);
         accept("二", NotificationCategory.INTERACTIVE, settings);
         accept("三", NotificationCategory.INTERACTIVE, settings);
-        assertThat(delivered).hasSize(2);
+        assertThat(delivered).hasSize(3); // 含温度计
 
         // 窗口已到期，但**不**调用 sweep()：直接再提交两条，抢占冲刷的工作
         clock.advance(Duration.ofMinutes(10));
@@ -190,9 +225,9 @@ class NoiseReducerTest {
         accept("五", NotificationCategory.INTERACTIVE, settings);
 
         // 「三」未被新窗口覆盖：按原样补发；「四」「五」属新窗口的 2 条即时送达
-        awaitDelivered(5);
+        awaitDelivered(6);
         assertThat(delivered).extracting(PushNotification::title).contains("三");
-        assertThat(delivered).hasSize(5);
+        assertThat(delivered).hasSize(6);
     }
 
     /** 等待补发执行器上的异步任务跑完（合并摘要是异步送达的）。 */
@@ -261,12 +296,13 @@ class NoiseReducerTest {
             accept("一", NotificationCategory.INTERACTIVE, settings);
             accept("二", NotificationCategory.INTERACTIVE, settings);
             accept("三", NotificationCategory.INTERACTIVE, settings);
-            assertThat(delivered).hasSize(2);
+            assertThat(delivered).hasSize(3); // 含温度计
 
             clock.advance(Duration.ofMinutes(10));
             reducer.sweep();
-            awaitDelivered(3);
-            assertThat(delivered).hasSize(3);
+            awaitDelivered(4);
+            assertThat(delivered).hasSize(4);
+            assertThat(delivered.get(3).title()).isEqualTo("三");
         } finally {
             reducer.stop();
         }

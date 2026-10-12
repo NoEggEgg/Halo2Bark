@@ -42,6 +42,21 @@ public class NotificationComposer {
     private static final String ELLIPSIS = "…";
 
     /**
+     * 事件感知的点击目标：站长收到不同事件后最想去的 Console 页面不同（PRD 5.5 的补充）。
+     *
+     * <p>路由均以 Halo v2.26.1 Console 源码为准（ui/console-src/modules 各模块的 module.ts）：
+     * <ul>
+     *   <li>评论待审核 → 评论列表并预选「待审核」筛选（CommentList 以 {@code approved} 查询参数
+     *       驱动筛选，待审核取 {@code false}）；</li>
+     *   <li>文章删除/取消发布 → 回收站（{@code /console/posts/deleted}，DeletedPosts）。
+     *       被删文章的原链接已是死链，跳站点首页则丢失上下文，回收站是唯一还有该文章的地方。</li>
+     * </ul>
+     * 相对路径经 {@link ExternalLinkProcessor} 绝对化为完整站点地址后下发。
+     */
+    private static final String CONSOLE_PENDING_COMMENTS_URL = "/console/comments?approved=false";
+    private static final String CONSOLE_DELETED_POSTS_URL = "/console/posts/deleted";
+
+    /**
      * 逐条图标只接受 iOS 能原生渲染的位图：SVG / WebP / AVIF 在 iOS 的 {@code UIImage} 侧无法可靠解码
      * （SVG 全版本无原生解码器，WebP 需 iOS 14+、AVIF 至今支持有限），而 Bark 的 icon 正是由 iOS 原生
      * 渲染，这些格式会令图标整体失效。Halo 默认头像与部分主题头像是 SVG，若不加过滤会盖掉全局图标。
@@ -69,17 +84,23 @@ public class NotificationComposer {
     public PushNotification compose(SiteEvent event, Judgement judgement, int contentMaxLength) {
         var subject = subjectResolver.resolve(event);
         return switch (event) {
-            case SiteEvent.CommentCreated e -> new PushNotification(
-                    withSubjectKind(judgement == Judgement.PENDING_COMMENT ? "🕓 评论待审核" : "💬 新评论",
-                            subject.kindName()),
-                    subject.title(),
-                    truncate(interactionBody(e.ownerKind(), e.ownerName(), e.ownerDisplayName(),
-                            e.content(), e.creationTime(), null), contentMaxLength),
-                    subject.url(),
-                    NotificationCategory.INTERACTIVE,
-                    true,
-                    icon(avatar(e.ownerKind(), e.ownerName())),
-                    imageOf(e.content()));
+            case SiteEvent.CommentCreated e -> {
+                // 待审核事件直达 Console 审核列表（预选待审核筛选）；普通新评论仍跳文章页看上下文
+                var url = judgement == Judgement.PENDING_COMMENT
+                        ? processLink(CONSOLE_PENDING_COMMENTS_URL)
+                        : subject.url();
+                yield new PushNotification(
+                        withSubjectKind(judgement == Judgement.PENDING_COMMENT ? "🕓 评论待审核" : "💬 新评论",
+                                subject.kindName()),
+                        subject.title(),
+                        truncate(interactionBody(e.ownerKind(), e.ownerName(), e.ownerDisplayName(),
+                                e.content(), e.creationTime(), null), contentMaxLength),
+                        url,
+                        NotificationCategory.INTERACTIVE,
+                        true,
+                        icon(avatar(e.ownerKind(), e.ownerName())),
+                        imageOf(e.content()));
+            }
             case SiteEvent.ReplyCreated e -> new PushNotification(
                     withSubjectKind("↩️ 新回复", subject.kindName()),
                     subject.title(),
@@ -90,15 +111,21 @@ public class NotificationComposer {
                     true,
                     icon(avatar(e.ownerKind(), e.ownerName())),
                     imageOf(e.content()));
-            case SiteEvent.PostChanged e -> new PushNotification(
-                    e.change() == SiteEvent.PostChange.PUBLISHED ? "📝 文章已发布" : "🗑️ 文章已删除或取消发布",
-                    subject.title(),
-                    "",
-                    subject.url(),
-                    NotificationCategory.NORMAL,
-                    true,
-                    "",
-                    subject.image());
+            case SiteEvent.PostChanged e -> {
+                // 删除/取消发布的文章原链接已是死链，点击直达回收站；发布事件仍跳文章页
+                var url = e.change() == SiteEvent.PostChange.PUBLISHED
+                        ? subject.url()
+                        : processLink(CONSOLE_DELETED_POSTS_URL);
+                yield new PushNotification(
+                        e.change() == SiteEvent.PostChange.PUBLISHED ? "📝 文章已发布" : "🗑️ 文章已删除或取消发布",
+                        subject.title(),
+                        "",
+                        url,
+                        NotificationCategory.NORMAL,
+                        true,
+                        "",
+                        subject.image());
+            }
             case SiteEvent.UserCreated e -> new PushNotification(
                     "👤 新用户注册",
                     "",

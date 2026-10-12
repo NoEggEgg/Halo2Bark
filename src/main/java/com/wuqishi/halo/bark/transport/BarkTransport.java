@@ -53,22 +53,29 @@ public class BarkTransport implements NotificationDelivery {
     private final BarkPayloadFactory factory;
     private final BarkRequestSender sender;
     private final SiteBrandSupplier siteBrand;
+    private final DeliveryHealthTracker tracker;
 
     /** 最近一次投递的摘要（含「测试该设备」发起的投递），供状态端点读取。 */
     private final AtomicReference<LastDelivery> lastDelivery = new AtomicReference<>();
 
     @Autowired
     public BarkTransport(BarkHttpClient http, BarkServerProbe probe, BarkPayloadFactory factory,
-            SiteBrandSupplier siteBrand) {
-        this(probe, factory, siteBrand, new BarkRequestSender(http, DEFAULT_SLEEPER));
+            SiteBrandSupplier siteBrand, DeliveryHealthTracker tracker) {
+        this(probe, factory, siteBrand, new BarkRequestSender(http, DEFAULT_SLEEPER), tracker);
     }
 
     public BarkTransport(BarkServerProbe probe, BarkPayloadFactory factory,
             SiteBrandSupplier siteBrand, BarkRequestSender sender) {
+        this(probe, factory, siteBrand, sender, new DeliveryHealthTracker());
+    }
+
+    public BarkTransport(BarkServerProbe probe, BarkPayloadFactory factory,
+            SiteBrandSupplier siteBrand, BarkRequestSender sender, DeliveryHealthTracker tracker) {
         this.probe = probe;
         this.factory = factory;
         this.siteBrand = siteBrand;
         this.sender = sender;
+        this.tracker = tracker;
     }
 
     /**
@@ -84,6 +91,11 @@ public class BarkTransport implements NotificationDelivery {
     @Override
     public DeliveryReport send(PushNotification notification, PushSettings settings,
             List<DeviceSetting> devices) {
+        return doSend(notification, settings, devices, true);
+    }
+
+    private DeliveryReport doSend(PushNotification notification, PushSettings settings,
+            List<DeviceSetting> devices, boolean trackHealth) {
         var targets = devices == null
                 ? List.<DeviceSetting>of()
                 : devices.stream().filter(Objects::nonNull).filter(DeviceSetting::deliverable).toList();
@@ -107,10 +119,62 @@ public class BarkTransport implements NotificationDelivery {
             results.addAll(deliverGroup(context, entry.getKey(), entry.getValue()));
         }
         var report = new DeliveryReport(results);
-        lastDelivery.set(new LastDelivery(Instant.now(), report.results().size(),
-                report.successCount(), report.failureCount()));
         logSummary(report);
+        if (trackHealth) {
+            lastDelivery.set(new LastDelivery(Instant.now(), report.results().size(),
+                    report.successCount(), report.failureCount()));
+            // 健康跟踪在摘要之后：其自身发送不更新 lastDelivery、不再嵌套跟踪
+            sendHealthNotifications(settings, targets, report);
+        }
         return report;
+    }
+
+    /**
+     * 健康跟踪：把本轮各设备结果交给 {@link DeliveryHealthTracker}，发送其产出的告警/恢复通知。
+     *
+     * <p>目标选择：失败告警经**本轮成功**的其他设备送达（失败设备收不到自己的告警）；
+     * 恢复通知经**刚恢复**的设备送达——成功即恢复的证明。无可用目标时放弃告警
+     * （单设备站点常见），状态保持告警态，恢复通知稍后仍会发出。
+     *
+     * <p>结果与设备按下标一一对应：结果列表严格按设备处理顺序构建（分组迭代保序、
+     * 分片内保序），构造上长度恒等；不一致视为程序缺陷，跳过本次跟踪。
+     */
+    private void sendHealthNotifications(PushSettings settings, List<DeviceSetting> targets,
+            DeliveryReport report) {
+        var results = report.results();
+        if (results.size() != targets.size()) {
+            log.debug("{} 健康跟踪跳过：结果数与设备数不一致（{} != {}）",
+                    BarkConstants.LOG_PREFIX, results.size(), targets.size());
+            return;
+        }
+        var healthy = new ArrayList<DeviceSetting>();
+        for (int i = 0; i < targets.size(); i++) {
+            if (results.get(i).success()) {
+                healthy.add(targets.get(i));
+            }
+        }
+        for (int i = 0; i < targets.size(); i++) {
+            var notice = tracker.onDeviceResult(targets.get(i), results.get(i), settings);
+            if (notice.isEmpty()) {
+                continue;
+            }
+            var health = notice.get();
+            var sendTargets = health.recovery()
+                    ? List.of(targets.get(i))
+                    : List.copyOf(healthy);
+            if (sendTargets.isEmpty()) {
+                log.debug("{} 设备「{}」投递失败且无其他可用设备，本次告警无法送达",
+                        BarkConstants.LOG_PREFIX, targets.get(i).name());
+                continue;
+            }
+            try {
+                // 健康通知不走跟踪（trackHealth=false），避免递归与状态污染
+                doSend(health.notification(), settings, sendTargets, false);
+            } catch (RuntimeException e) {
+                log.warn("{} 健康通知发送失败：{}", BarkConstants.LOG_PREFIX,
+                        Masking.sanitize(e.toString()));
+            }
+        }
     }
 
     /** 最近一次投递摘要；尚未投递过时为空（供状态端点读取）。 */

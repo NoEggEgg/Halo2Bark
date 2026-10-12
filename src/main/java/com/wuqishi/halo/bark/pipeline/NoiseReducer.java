@@ -12,6 +12,8 @@ import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -100,6 +102,15 @@ public class NoiseReducer {
     private final List<BufferedNotification> overflow = new ArrayList<>();
     private final List<BufferedNotification> quietBuffer = new ArrayList<>();
     private long overflowMinute = Long.MIN_VALUE;
+
+    /**
+     * 爆发温度计的激活集合：对应判定语义的温度计通知已推送、尚未被合并摘要替换。
+     *
+     * <p>爆发开始（第一条进入暂存）时推送「🔥 评论爆发中」并登记；合并摘要产出时携带
+     * 同一通知 id（Bark 的更新替换语义）**原地替换**温度计，同时解除登记。
+     * 投递线程与冲刷线程都会访问，故用并发集合。
+     */
+    private final Set<Judgement> thermometerActive = ConcurrentHashMap.newKeySet();
 
     /** 缓冲溢出被丢弃的累计条数：丢弃必须可观测，不能静默发生。 */
     private final AtomicLong droppedOverflow = new AtomicLong();
@@ -210,6 +221,7 @@ public class NoiseReducer {
                 quietCapWarned = false;
             }
             int pendingMerge = mergeWindows.discardPending();
+            thermometerActive.clear();
             if (pendingQuiet + pendingOverflow + pendingMerge > 0) {
                 log.warn("{} 降噪层停止，丢弃暂存通知：免打扰 {} 条、限流溢出 {} 条、合并窗口 {} 条",
                         BarkConstants.LOG_PREFIX, pendingQuiet, pendingOverflow, pendingMerge);
@@ -287,9 +299,40 @@ public class NoiseReducer {
             var items = action.merged();
             sendOnFlushThread(() -> sendSummaries(items,
                     (group, groupSettings) -> SummaryComposer.merged(group.get(0).judgement(), group,
-                            groupSettings.contentMaxLengthOrDefault()),
+                            groupSettings.contentMaxLengthOrDefault(), null),
                     "合并"));
         }
+        updateThermometer(action, judgement, notification, settings);
+    }
+
+    /**
+     * 爆发温度计：本条进入暂存（{@code heldCount == 1}，即前两条已立即送达）且该判定语义
+     * 尚无活跃温度计时，推送一条「🔥 评论爆发中」，固定 id 为 {@code halo2bark-burst-*}。
+     *
+     * <p>后续同判定语义的合并摘要携带同一 id **原地替换**温度计（见 {@link #sendSummaries}），
+     * 手机上整场爆发只占一条过程通知。直接送达（不经限流/合并）——温度计一次爆发只发一条，
+     * 且爆发期配额本就紧张，被限流暂存只会让进展更新迟到失真。
+     */
+    private void updateThermometer(MergeWindowTracker.Action action, Judgement judgement,
+            PushNotification notification, PushSettings settings) {
+        if (action.heldCount() != 1 || !thermometerActive.add(judgement)) {
+            return;
+        }
+        var thermometer = new PushNotification(
+                "🔥 评论爆发中",
+                "",
+                "同类事件已进入合并模式\n本波结束后将合并为一条摘要推送",
+                "",
+                notification.category(),
+                true,
+                burstId(judgement));
+        log.info("{} 检测到评论爆发，已推送温度计：{}", BarkConstants.LOG_PREFIX, judgement);
+        deliver(thermometer, settings);
+    }
+
+    /** 爆发温度计的通知 id：按判定语义稳定，供合并摘要原地替换。 */
+    private static String burstId(Judgement judgement) {
+        return "halo2bark-burst-" + judgement.name().toLowerCase(java.util.Locale.ROOT);
     }
 
     /** 冲刷扫描；包级可见以便单测直接驱动（无需等待真实定时器）。 */
@@ -309,10 +352,13 @@ public class NoiseReducer {
             var items = entry.getValue();
             sendOnFlushThread(() -> sendSummaries(items,
                     (group, groupSettings) -> SummaryComposer.merged(group.get(0).judgement(), group,
-                            groupSettings.contentMaxLengthOrDefault()),
+                            groupSettings.contentMaxLengthOrDefault(), null),
                     "窗口结束，合并"));
         }
         for (var single : expired.singles()) {
+            // 窗口结束时仅剩 1 条则按原样补发——本波爆发未产出摘要，温度计随之失效，
+            // 解除登记使下一波爆发能重新触发（旧温度计通知留在手机上，由下一次替换）
+            thermometerActive.remove(single.judgement());
             sendOnFlushThread(() -> deliverCharged(single));
         }
     }
@@ -378,6 +424,9 @@ public class NoiseReducer {
      *
      * <p>每条暂存项都带着入队时刻的快照；跨配置更新的批次可能对应不同的可投递设备集合，
      * 若统一取第一条的快照会漏发设备或用了错误的传输参数，因此按快照分组、各组独立成摘要。
+     *
+     * <p>替换温度计：若本组条目涉及已激活的爆发温度计，摘要携带该温度计的通知 id，
+     * 在手机上**原地替换**过程通知——整场爆发最终只留下一条摘要。
      */
     private void sendSummaries(List<BufferedNotification> items,
             BiFunction<List<BufferedNotification>, PushSettings, PushNotification> composer,
@@ -385,9 +434,29 @@ public class NoiseReducer {
         for (var group : groupBySettings(items)) {
             var settings = group.get(0).settings();
             var summary = composer.apply(group, settings);
+            // 替换温度计：本组若涉及已激活的温度计，摘要携带同一 id；仅在摘要**实际送达**后
+            // 才解除登记——被限流暂存的摘要保留登记，由后续真正的送达（含溢出补发）完成替换，
+            // 替换链不会因限流断裂
+            var involved = group.stream().map(BufferedNotification::judgement).toList();
+            String thermometerId = null;
+            for (var judgement : involved) {
+                if (thermometerActive.contains(judgement)) {
+                    thermometerId = burstId(judgement);
+                    break;
+                }
+            }
+            if (thermometerId != null) {
+                summary = new PushNotification(summary.title(), summary.subtitle(),
+                        summary.body(), summary.url(), summary.category(), summary.archive(),
+                        summary.icon(), summary.image(), thermometerId);
+            }
             log.info("{} {} {} 条为一条摘要：{}", BarkConstants.LOG_PREFIX, reason, group.size(),
                     summary.title());
-            deliverCharged(new BufferedNotification(group.get(0).judgement(), summary, settings));
+            var sent = deliverCharged(
+                    new BufferedNotification(group.get(0).judgement(), summary, settings));
+            if (sent) {
+                thermometerActive.removeAll(involved);
+            }
         }
     }
 
@@ -411,8 +480,11 @@ public class NoiseReducer {
     /**
      * 非安全类投递：先占用本分钟配额；占不到则暂存到溢出缓冲，留到下一分钟补发聚合摘要
      * （PRD 5.4：超出配额的部分不丢弃）。
+     *
+     * @return {@code true} 已实际送达；{@code false} 已进入限流溢出缓冲（供温度计替换登记
+     *     推迟到真正送达时解除）
      */
-    private void deliverCharged(BufferedNotification item) {
+    private boolean deliverCharged(BufferedNotification item) {
         if (!rateLimiter.tryAcquire()) {
             synchronized (lock) {
                 if (overflow.isEmpty()) {
@@ -436,9 +508,10 @@ public class NoiseReducer {
             }
             log.debug("{} 本分钟配额已满，暂存待聚合：{}", BarkConstants.LOG_PREFIX,
                     item.notification().title());
-            return;
+            return false;
         }
         deliver(item.notification(), item.settings());
+        return true;
     }
 
     /** 限流溢出缓冲因达到上限而被丢弃的累计条数（供状态端点与测试读取）。 */
