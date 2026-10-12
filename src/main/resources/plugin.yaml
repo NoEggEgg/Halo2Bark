@@ -5,7 +5,7 @@ metadata:
 spec:
   enabled: true
   displayName: "Halo2Bark"
-  version: 1.0.1
+  version: 1.0.2
   requires: ">=2.26.0"
   settingName: halo2bark-settings
   configMapName: halo2bark-configmap
