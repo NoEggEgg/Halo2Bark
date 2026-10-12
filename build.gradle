@@ -1,5 +1,6 @@
 plugins {
     id 'java'
+    id 'jacoco'
     id "io.freefair.lombok" version "9.2.0"
     id "run.halo.plugin.devtools" version "0.6.2"
 }
@@ -52,6 +53,16 @@ halo {
 
 test {
     useJUnitPlatform()
+    // 测试结束后生成覆盖率报告（HTML 供本地查看，XML 供 CI 上传）
+    finalizedBy tasks.named('jacocoTestReport')
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+    }
 }
 
 tasks.named('generatePluginComponentsIdx') {
