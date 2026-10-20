@@ -24,6 +24,7 @@ final class SummaryComposer {
             Judgement.NEW_COMMENT, "💬 %d 条新评论",
             Judgement.PENDING_COMMENT, "🕓 %d 条评论待审核",
             Judgement.NEW_REPLY, "↩️ %d 条新回复",
+            Judgement.PENDING_REPLY, "🕓 %d 条回复待审核",
             Judgement.POST_PUBLISHED, "📝 %d 篇文章已发布",
             Judgement.POST_REMOVED, "🗑️ %d 篇文章被删除或取消发布",
             Judgement.USER_REGISTERED, "👤 %d 位新用户注册",

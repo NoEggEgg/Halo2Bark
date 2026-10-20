@@ -151,6 +151,47 @@ class EventJudgeTest {
     }
 
     @Test
+    @DisplayName("规则3：开启审核且回复未通过 → 回复待审核（与评论对称）")
+    void pendingReplyWhenReviewRequired() {
+        givenCommentOwner("c-9", "User", "alice");
+        when(reviewSetting.requireReviewForNew()).thenReturn(true);
+        var event = new SiteEvent.ReplyCreated("r-1", "c-9", "Email", "guest@example.com", "访客",
+                "reply", null, null, false, false);
+        assertThat(judge.judge(event)).contains(Judgement.PENDING_REPLY);
+    }
+
+    @Test
+    @DisplayName("规则3：开启审核但回复已通过 → 新回复（互斥）")
+    void approvedReplyIsNewReply() {
+        givenCommentOwner("c-9", "User", "alice");
+        when(reviewSetting.requireReviewForNew()).thenReturn(true);
+        var event = new SiteEvent.ReplyCreated("r-1", "c-9", "Email", "guest@example.com", "访客",
+                "reply", null, null, true, false);
+        assertThat(judge.judge(event)).contains(Judgement.NEW_REPLY);
+    }
+
+    @Test
+    @DisplayName("规则3：未开启审核时，未通过的回复也属新回复（Halo 此时直接放行）")
+    void unapprovedReplyWithoutReviewIsNewReply() {
+        givenCommentOwner("c-9", "User", "alice");
+        when(reviewSetting.requireReviewForNew()).thenReturn(false);
+        var event = new SiteEvent.ReplyCreated("r-1", "c-9", "Email", "guest@example.com", "访客",
+                "reply", null, null, false, false);
+        assertThat(judge.judge(event)).contains(Judgement.NEW_REPLY);
+    }
+
+    @Test
+    @DisplayName("操作者规则：管理员自己发的待审核回复 → 不通知（先于待审核判定）")
+    void operatorPendingReplyIsNotNotified() {
+        givenOperator("alice");
+        givenCommentOwner("c-9", "Email", "guest@example.com");
+        when(reviewSetting.requireReviewForNew()).thenReturn(true);
+        var event = new SiteEvent.ReplyCreated("r-1", "c-9", "User", "alice", "Alice",
+                "reply", null, null, false, false);
+        assertThat(judge.judge(event)).isEmpty();
+    }
+
+    @Test
     @DisplayName("第三方主体无法判定作者 → 不抑制通知")
     void unknownSubjectKindIsNotSuppressed() {
         when(reviewSetting.requireReviewForNew()).thenReturn(false);

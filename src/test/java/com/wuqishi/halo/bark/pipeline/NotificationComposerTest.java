@@ -303,6 +303,93 @@ class NotificationComposerTest {
     }
 
     @Test
+    @DisplayName("回复待审核：与评论待审核同路，直达 Console 待审核列表")
+    void pendingReplyLinksToConsoleReview() {
+        givenSubject("文章标题", "https://site/archives/p-1", "文章");
+
+        var notification = composer.compose(new SiteEvent.ReplyCreated("r", "c-1", "Email",
+                "a@b.c", "访客", "内容", null, COMMENTED_AT, false, false), Judgement.PENDING_REPLY, 0);
+
+        assertThat(notification.title()).isEqualTo("🕓 回复待审核 · 文章");
+        assertThat(notification.url()).isEqualTo("/console/comments?approved=false");
+    }
+
+    @Test
+    @DisplayName("已通过的新回复：仍跳文章页看上下文")
+    void approvedReplyKeepsSubjectUrl() {
+        givenSubject("文章标题", "https://site/archives/p-1", "文章");
+
+        var notification = composer.compose(new SiteEvent.ReplyCreated("r", "c-1", "User",
+                "bob", "Bob", "内容", null, COMMENTED_AT), Judgement.NEW_REPLY, 0);
+
+        assertThat(notification.url()).isEqualTo("https://site/archives/p-1");
+    }
+
+    @Test
+    @DisplayName("私密评论：正文首行标注「公众不可见」")
+    void privateCommentLabeled() {
+        givenSubject("", "", "");
+
+        var notification = composer.compose(new SiteEvent.CommentCreated("c", null, "User",
+                "bob", "Bob", "悄悄话", false, COMMENTED_AT, true), Judgement.NEW_COMMENT, 0);
+
+        assertThat(notification.body()).startsWith("🔒 私密评论（公众不可见）");
+        assertThat(notification.body()).contains("悄悄话");
+    }
+
+    @Test
+    @DisplayName("私密回复：正文首行标注「公众不可见」")
+    void privateReplyLabeled() {
+        givenSubject("", "", "");
+
+        var notification = composer.compose(new SiteEvent.ReplyCreated("r", "c-1", "User",
+                "bob", "Bob", "悄悄话", null, COMMENTED_AT, true, true), Judgement.NEW_REPLY, 0);
+
+        assertThat(notification.body()).startsWith("🔒 私密回复（公众不可见）");
+        assertThat(notification.body()).contains("悄悄话");
+    }
+
+    @Test
+    @DisplayName("公开评论 / 回复：正文不含私密标注")
+    void publicContentHasNoPrivateLabel() {
+        givenSubject("", "", "");
+
+        var comment = composer.compose(new SiteEvent.CommentCreated("c", null, "User", "bob",
+                "Bob", "公开内容", false, COMMENTED_AT), Judgement.NEW_COMMENT, 0);
+        var reply = composer.compose(new SiteEvent.ReplyCreated("r", "c-1", "User", "bob",
+                "Bob", "公开内容", null, COMMENTED_AT), Judgement.NEW_REPLY, 0);
+
+        assertThat(comment.body()).doesNotContain("私密").startsWith("Bob · ");
+        assertThat(reply.body()).doesNotContain("私密");
+    }
+
+    @Test
+    @DisplayName("私密且待审核的评论：标题走待审核、链接进 Console，正文同时带私密标注")
+    void pendingPrivateCommentCombinesBoth() {
+        givenSubject("文章标题", "https://site/archives/p-1", "文章");
+
+        var notification = composer.compose(new SiteEvent.CommentCreated("c", null, "Email",
+                "a@b.c", "访客", "内容", false, COMMENTED_AT, true), Judgement.PENDING_COMMENT, 0);
+
+        assertThat(notification.title()).isEqualTo("🕓 评论待审核 · 文章");
+        assertThat(notification.url()).isEqualTo("/console/comments?approved=false");
+        assertThat(notification.body()).startsWith("🔒 私密评论（公众不可见）");
+    }
+
+    @Test
+    @DisplayName("私密且待审核的回复：与评论组合场景对称")
+    void pendingPrivateReplyCombinesBoth() {
+        givenSubject("文章标题", "https://site/archives/p-1", "文章");
+
+        var notification = composer.compose(new SiteEvent.ReplyCreated("r", "c-1", "Email",
+                "a@b.c", "访客", "内容", null, COMMENTED_AT, false, true), Judgement.PENDING_REPLY, 0);
+
+        assertThat(notification.title()).isEqualTo("🕓 回复待审核 · 文章");
+        assertThat(notification.url()).isEqualTo("/console/comments?approved=false");
+        assertThat(notification.body()).startsWith("🔒 私密回复（公众不可见）");
+    }
+
+    @Test
     @DisplayName("文章删除：原链接已死，点击直达回收站")
     void removedPostLinksToTrash() {
         givenSubject("被删文章", "https://site/archives/dead", "");

@@ -41,6 +41,8 @@ public class ReplyReconciler extends CreateReconciler<Reply> {
                 owner == null ? null : owner.getDisplayName(),
                 spec.getContent(),
                 spec.getQuoteReply(),
-                displayTime(spec.getCreationTime(), reply.getMetadata())));
+                displayTime(spec.getCreationTime(), reply.getMetadata()),
+                Boolean.TRUE.equals(spec.getApproved()),
+                Boolean.TRUE.equals(spec.getHidden())));
     }
 }

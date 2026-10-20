@@ -13,7 +13,7 @@ spec:
     name: 子青雨
     website: https://wuqishi.com
   description: >-
-    将 Halo 站点的新评论、新回复、评论待审核、新设备登录、文章发布、新用户注册、
+    将 Halo 站点的新评论、新回复、评论待审核、回复待审核、新设备登录、文章发布、新用户注册、
     文章删除等事件实时推送到 Bark（iOS / macOS）。支持多设备批量投递与失败隔离、
     评论爆发合并、静默时段与加密推送；设备 Key 与加密密钥保存在 Halo Secret 中。
   logo: https://wuqishi.com/dan.svg

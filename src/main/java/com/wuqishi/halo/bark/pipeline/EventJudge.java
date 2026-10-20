@@ -25,7 +25,8 @@ import run.halo.app.extension.Ref;
  *       （{@link SiteOperatorRegistry}）。这条**必须最先执行**：它是唯一不依赖任何数据查询的规则，
  *       且与评论主体类型无关，因此第三方评论主体、多作者站点下同样成立。</li>
  *   <li>自己评论自己不通知、回复自己不通知——评论者 / 回复者就是被评论主体或被回复对象的作者。</li>
- *   <li>「新评论」与「评论待审核」互斥。</li>
+ *   <li>「新评论」与「评论待审核」互斥；「新回复」与「回复待审核」互斥——两者的待审核判定
+ *       对称：Halo 的 {@code comment.requireReviewForNew} 对评论与回复都生效。</li>
  * </ol>
  *
  * <p>本类运行在**投递线程**（允许阻塞），因此可以读取扩展对象：被评论主体、被回复评论与被引用回复
@@ -82,6 +83,8 @@ public class EventJudge {
      * <p>三处判定缺一不可：只看「被回复对象」会把管理员回复访客当成新回复推送；只看「主体作者」
      * 又会让访客之间的互相回复漏推；而这两者都依赖数据查询，在第三方评论主体与多作者站点下取不到
      * 主体作者，故需 {@link SiteOperatorRegistry} 兜底。
+     *
+     * <p>规则 3（与评论对称）：站点开启评论审核且回复未通过时判为「回复待审核」。
      */
     private Optional<Judgement> judgeReply(SiteEvent.ReplyCreated reply) {
         if (operators.isOperator(reply.ownerKind(), reply.ownerName())) {
@@ -95,6 +98,9 @@ public class EventJudge {
         }
         if (isSameAuthor(reply.ownerKind(), reply.ownerName(), subjectAuthorOf(parent))) {
             return Optional.empty();
+        }
+        if (reviewSetting.requireReviewForNew() && !reply.approved()) {
+            return Optional.of(Judgement.PENDING_REPLY);
         }
         return Optional.of(Judgement.NEW_REPLY);
     }

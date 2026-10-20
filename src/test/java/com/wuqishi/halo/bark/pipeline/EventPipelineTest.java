@@ -50,7 +50,7 @@ class EventPipelineTest {
 
     private static BarkSettings allEnabled() {
         return new BarkSettings(PushSettings.defaults(),
-                new EventToggles(true, true, true, true, true, true, true));
+                new EventToggles(true, true, true, true, true, true, true, true));
     }
 
     private static SiteEvent event(String name) {
@@ -81,7 +81,7 @@ class EventPipelineTest {
     @DisplayName("配置非法 → 停止投递，且不进入判定")
     void dropsWhenConfigInvalid() {
         var invalid = new BarkSettings(PushSettings.defaults(),
-                new EventToggles(true, true, true, true, true, true, true),
+                new EventToggles(true, true, true, true, true, true, true, true),
                 List.of("加密密钥必须是 16 个字节（AES128 要求）"));
 
         pipeline.process(event("c-1"), invalid);
@@ -95,7 +95,7 @@ class EventPipelineTest {
     void resumesWhenConfigBecomesValid() {
         when(judge.judge(any())).thenReturn(Optional.of(Judgement.NEW_COMMENT));
         var invalid = new BarkSettings(PushSettings.defaults(),
-                new EventToggles(true, true, true, true, true, true, true),
+                new EventToggles(true, true, true, true, true, true, true, true),
                 List.of("加密密钥必须是 16 个字节（AES128 要求）"));
 
         pipeline.process(event("c-1"), invalid);
@@ -109,7 +109,29 @@ class EventPipelineTest {
     void dropsWhenToggleOff() {
         when(judge.judge(any())).thenReturn(Optional.of(Judgement.NEW_COMMENT));
         var settings = new BarkSettings(PushSettings.defaults(),
-                new EventToggles(false, true, true, true, true, true, true));
+                new EventToggles(false, true, true, true, true, true, true, true));
+
+        pipeline.process(event("c-1"), settings);
+
+        verify(noiseReducer, never()).accept(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("回复待审核判定 + 开关开启 → 交给降噪层")
+    void handsOverPendingReply() {
+        when(judge.judge(any())).thenReturn(Optional.of(Judgement.PENDING_REPLY));
+
+        pipeline.process(event("c-1"), allEnabled());
+
+        verify(noiseReducer).accept(eq(Judgement.PENDING_REPLY), any(), any());
+    }
+
+    @Test
+    @DisplayName("回复待审核开关关闭 → 不交给降噪层")
+    void dropsWhenReplyPendingToggleOff() {
+        when(judge.judge(any())).thenReturn(Optional.of(Judgement.PENDING_REPLY));
+        var settings = new BarkSettings(PushSettings.defaults(),
+                new EventToggles(true, true, true, false, true, true, true, true));
 
         pipeline.process(event("c-1"), settings);
 

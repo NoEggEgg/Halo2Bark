@@ -86,7 +86,7 @@ class CollectorTest {
     }
 
     @Test
-    @DisplayName("回复创建 → 新回复事件（携带所属评论名）")
+    @DisplayName("回复创建 → 新回复事件（携带所属评论名与审核状态）")
     void projectsReplyCreated() {
         var reply = new Reply();
         reply.setMetadata(metadata("r-1"));
@@ -94,6 +94,7 @@ class CollectorTest {
         spec.setCommentName("c-1");
         spec.setContent("回复内容");
         spec.setOwner(owner("Email", "a@b.c", "访客"));
+        spec.setApproved(true);
         reply.setSpec(spec);
         when(client.fetch(Reply.class, "r-1")).thenReturn(Optional.of(reply));
 
@@ -101,6 +102,61 @@ class CollectorTest {
 
         verify(dispatcher).submit(new SiteEvent.ReplyCreated("r-1", "c-1", "Email", "a@b.c",
                 "访客", "回复内容", null, null));
+    }
+
+    @Test
+    @DisplayName("未通过审核的回复：approved=false 原样投影（供待审核判定使用）")
+    void projectsUnapprovedReply() {
+        var reply = new Reply();
+        reply.setMetadata(metadata("r-2"));
+        var spec = new Reply.ReplySpec();
+        spec.setCommentName("c-1");
+        spec.setContent("待审回复");
+        spec.setApproved(false);
+        reply.setSpec(spec);
+        when(client.fetch(Reply.class, "r-2")).thenReturn(Optional.of(reply));
+
+        new ReplyReconciler(client, dispatcher).reconcile(new Reconciler.Request("r-2"));
+
+        verify(dispatcher).submit(new SiteEvent.ReplyCreated("r-2", "c-1", null, null,
+                null, "待审回复", null, null, false, false));
+    }
+
+    @Test
+    @DisplayName("私密评论：hidden=true 原样投影（供私密标注使用）")
+    void projectsHiddenComment() {
+        var comment = new Comment();
+        comment.setMetadata(metadata("c-4"));
+        var spec = new Comment.CommentSpec();
+        spec.setContent("悄悄话");
+        spec.setApproved(true);
+        spec.setHidden(true);
+        comment.setSpec(spec);
+        when(client.fetch(Comment.class, "c-4")).thenReturn(Optional.of(comment));
+
+        new CommentReconciler(client, dispatcher).reconcile(new Reconciler.Request("c-4"));
+
+        verify(dispatcher).submit(new SiteEvent.CommentCreated("c-4", null, null, null, null,
+                "悄悄话", true, null, true));
+    }
+
+    @Test
+    @DisplayName("私密回复：hidden=true 原样投影（Halo 会从父评论传染 hidden，投影实际值即可）")
+    void projectsHiddenReply() {
+        var reply = new Reply();
+        reply.setMetadata(metadata("r-3"));
+        var spec = new Reply.ReplySpec();
+        spec.setCommentName("c-1");
+        spec.setContent("私密回复内容");
+        spec.setApproved(true);
+        spec.setHidden(true);
+        reply.setSpec(spec);
+        when(client.fetch(Reply.class, "r-3")).thenReturn(Optional.of(reply));
+
+        new ReplyReconciler(client, dispatcher).reconcile(new Reconciler.Request("r-3"));
+
+        verify(dispatcher).submit(new SiteEvent.ReplyCreated("r-3", "c-1", null, null,
+                null, "私密回复内容", null, null, true, true));
     }
 
     @Test

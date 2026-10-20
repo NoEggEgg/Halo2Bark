@@ -57,6 +57,14 @@ public class NotificationComposer {
     private static final String CONSOLE_DELETED_POSTS_URL = "/console/posts/deleted";
 
     /**
+     * 私密评论 / 回复的正文标注。Halo 2.27 起 Console 可将评论与回复设为私密
+     * （{@code spec.hidden}，公众不可见、仅管理员可见）——推送时必须标注，
+     * 避免站长在不知情的情况下把私密内容当作公开讨论处理。
+     */
+    private static final String PRIVATE_COMMENT_LABEL = "🔒 私密评论（公众不可见）";
+    private static final String PRIVATE_REPLY_LABEL = "🔒 私密回复（公众不可见）";
+
+    /**
      * 逐条图标只接受 iOS 能原生渲染的位图：SVG / WebP / AVIF 在 iOS 的 {@code UIImage} 侧无法可靠解码
      * （SVG 全版本无原生解码器，WebP 需 iOS 14+、AVIF 至今支持有限），而 Bark 的 icon 正是由 iOS 原生
      * 渲染，这些格式会令图标整体失效。Halo 默认头像与部分主题头像是 SVG，若不加过滤会盖掉全局图标。
@@ -94,23 +102,31 @@ public class NotificationComposer {
                                 subject.kindName()),
                         subject.title(),
                         truncate(interactionBody(e.ownerKind(), e.ownerName(), e.ownerDisplayName(),
-                                e.content(), e.creationTime(), null), contentMaxLength),
+                                e.content(), e.creationTime(), null,
+                                e.hidden() ? PRIVATE_COMMENT_LABEL : null), contentMaxLength),
                         url,
                         NotificationCategory.INTERACTIVE,
                         true,
                         icon(avatar(e.ownerKind(), e.ownerName())),
                         imageOf(e.content()));
             }
-            case SiteEvent.ReplyCreated e -> new PushNotification(
-                    withSubjectKind("↩️ 新回复", subject.kindName()),
-                    subject.title(),
-                    truncate(interactionBody(e.ownerKind(), e.ownerName(), e.ownerDisplayName(),
-                            e.content(), e.creationTime(), e.quoteReplyName()), contentMaxLength),
-                    subject.url(),
-                    NotificationCategory.INTERACTIVE,
-                    true,
-                    icon(avatar(e.ownerKind(), e.ownerName())),
-                    imageOf(e.content()));
+            case SiteEvent.ReplyCreated e -> {
+                // 待审核回复与待审核评论同路：直达 Console 审核列表；已通过的新回复仍跳文章页
+                var pending = judgement == Judgement.PENDING_REPLY;
+                var url = pending ? processLink(CONSOLE_PENDING_COMMENTS_URL) : subject.url();
+                yield new PushNotification(
+                        withSubjectKind(pending ? "🕓 回复待审核" : "↩️ 新回复",
+                                subject.kindName()),
+                        subject.title(),
+                        truncate(interactionBody(e.ownerKind(), e.ownerName(), e.ownerDisplayName(),
+                                e.content(), e.creationTime(), e.quoteReplyName(),
+                                e.hidden() ? PRIVATE_REPLY_LABEL : null), contentMaxLength),
+                        url,
+                        NotificationCategory.INTERACTIVE,
+                        true,
+                        icon(avatar(e.ownerKind(), e.ownerName())),
+                        imageOf(e.content()));
+            }
             case SiteEvent.PostChanged e -> {
                 // 删除/取消发布的文章原链接已是死链，点击直达回收站；发布事件仍跳文章页
                 var url = e.change() == SiteEvent.PostChange.PUBLISHED
@@ -195,13 +211,16 @@ public class NotificationComposer {
     }
 
     /**
-     * 评论 / 回复正文：首行「谁 · 何时」，回复再带一行「回复了 @某某」，其后为内容。
+     * 评论 / 回复正文：私密标注（如有）→ 首行「谁 · 何时」→ 回复再带一行「回复了 @某某」→ 内容。
      *
      * <p>内容经 HTML 转纯文本——Halo 的 `Comment.spec.content` / `Reply.spec.content` 是 HTML。
+     *
+     * @param privateLabel 私密标注行；非空表示这是公众不可见的私密评论 / 回复
      */
     private String interactionBody(String ownerKind, String ownerName, String displayName,
-            String htmlContent, Instant creationTime, String quoteReplyName) {
+            String htmlContent, Instant creationTime, String quoteReplyName, String privateLabel) {
         var lines = new ArrayList<String>();
+        addIfPresent(lines, privateLabel);
         addIfPresent(lines, metaLine(displayName, ownerName, creationTime));
         if (quoteReplyName != null && !quoteReplyName.isBlank()) {
             var quoted = authorResolver.quotedReplyAuthorName(quoteReplyName);

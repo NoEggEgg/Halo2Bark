@@ -16,6 +16,9 @@ public enum Judgement {
     /** 新回复 */
     NEW_REPLY,
 
+    /** 回复待审核（与评论待审核对称：Halo 的评论审核设置对回复同样生效） */
+    PENDING_REPLY,
+
     /** 文章发布 */
     POST_PUBLISHED,
 

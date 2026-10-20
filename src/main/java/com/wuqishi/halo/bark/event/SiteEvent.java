@@ -53,10 +53,20 @@ public sealed interface SiteEvent {
      * @param content 评论正文（**Halo 存储的是 HTML**，展示前需转纯文本）
      * @param approved 是否已审核通过（{@code Comment.spec.approved}，默认 {@code false}）
      * @param creationTime 评论创建时间；可能为空
+     * @param hidden 是否为私密评论（{@code Comment.spec.hidden}；Halo 2.27 起 Console 可将评论
+     *     设为私密——公众不可见、仅管理员可见，推送时需标注，避免站长误当作公开评论处理）
      */
     record CommentCreated(String commentName, SubjectRef subjectRef, String ownerKind, String ownerName,
-            String ownerDisplayName, String content, boolean approved, Instant creationTime)
+            String ownerDisplayName, String content, boolean approved, Instant creationTime,
+            boolean hidden)
             implements SiteEvent {
+
+        /** 便捷构造：非私密评论（{@code hidden=false}），覆盖绝大多数场景。 */
+        public CommentCreated(String commentName, SubjectRef subjectRef, String ownerKind, String ownerName,
+                String ownerDisplayName, String content, boolean approved, Instant creationTime) {
+            this(commentName, subjectRef, ownerKind, ownerName, ownerDisplayName, content, approved,
+                    creationTime, false);
+        }
 
         @Override
         public NotificationCategory category() {
@@ -88,10 +98,22 @@ public sealed interface SiteEvent {
      * @param content 回复正文（HTML）
      * @param quoteReplyName 被引用的回复对象名；为空表示直接回复评论而非引用某条回复
      * @param creationTime 回复创建时间；可能为空
+     * @param approved 是否已审核通过（{@code Reply.spec.approved}）。Halo 的评论审核设置
+     *     {@code comment.requireReviewForNew} 对回复同样生效（见 {@code CommentFinderEndpoint}
+     *     创建回复时 {@code setApproved(isFalse(requireReviewForNew))}），因此待审核判定与评论对称
+     * @param hidden 是否为私密回复（{@code Reply.spec.hidden}；语义同 {@link CommentCreated}）
      */
     record ReplyCreated(String replyName, String commentName, String ownerKind, String ownerName,
-            String ownerDisplayName, String content, String quoteReplyName, Instant creationTime)
+            String ownerDisplayName, String content, String quoteReplyName, Instant creationTime,
+            boolean approved, boolean hidden)
             implements SiteEvent {
+
+        /** 便捷构造：已审核通过、非私密的回复（站点未开启评论审核时的常规形态）。 */
+        public ReplyCreated(String replyName, String commentName, String ownerKind, String ownerName,
+                String ownerDisplayName, String content, String quoteReplyName, Instant creationTime) {
+            this(replyName, commentName, ownerKind, ownerName, ownerDisplayName, content,
+                    quoteReplyName, creationTime, true, false);
+        }
 
         @Override
         public NotificationCategory category() {

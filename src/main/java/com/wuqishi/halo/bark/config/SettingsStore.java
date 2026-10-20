@@ -148,13 +148,14 @@ public class SettingsStore {
         var deliverable = push.deliverableDevices();
         var serverCount = deliverable.stream().map(DeviceSetting::serverUrl).distinct().count();
         return ("分组=%s 设备=%d(可投递 %d, 服务地址 %d 个) 互动类级别=%s 普通类级别=%s 归档=%s/%s "
-                + "加密=%s 合并窗口=%s 静默时段=%s 事件开关[评论=%s 回复=%s 待审核=%s 新设备=%s "
-                + "发布=%s 注册=%s 删除=%s]").formatted(
+                + "加密=%s 合并窗口=%s 静默时段=%s 事件开关[评论=%s 回复=%s 评论待审核=%s 回复待审核=%s "
+                + "新设备=%s 发布=%s 注册=%s 删除=%s]").formatted(
                 push.group().isBlank() ? "(站点名称)" : push.group(),
                 push.devices().size(), deliverable.size(), serverCount,
                 push.interactiveLevel(), push.normalLevel(), push.archiveEnabled(), push.archiveTtl(),
                 push.encryptEnabled(), push.mergeWindow(), push.quietHoursEnabled(),
                 events.newCommentEnabled(), events.newReplyEnabled(), events.commentPendingEnabled(),
+                events.replyPendingEnabled(),
                 events.newDeviceLoginEnabled(),
                 events.postPublishedEnabled(), events.userRegisteredEnabled(), events.postRemovedEnabled());
     }

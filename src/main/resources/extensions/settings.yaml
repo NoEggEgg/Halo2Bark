@@ -317,6 +317,12 @@ spec:
           value: true
           help: 仅在站点开启评论审核时生效；此时新评论只发「评论待审核」，不会重复发送
         - $formkit: checkbox
+          name: replyPendingEnabled
+          id: replyPendingEnabled
+          label: 回复待审核
+          value: true
+          help: 仅在站点开启评论审核时生效（Halo 的评论审核对回复同样生效）；此时新回复只发「回复待审核」，不会重复发送
+        - $formkit: checkbox
           name: newDeviceLoginEnabled
           id: newDeviceLoginEnabled
           label: 新设备登录

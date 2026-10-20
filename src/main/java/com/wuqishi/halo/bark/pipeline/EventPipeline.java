@@ -135,6 +135,7 @@ public class EventPipeline implements NotificationPipeline {
             case NEW_COMMENT -> Boolean.TRUE.equals(events.newCommentEnabled());
             case PENDING_COMMENT -> Boolean.TRUE.equals(events.commentPendingEnabled());
             case NEW_REPLY -> Boolean.TRUE.equals(events.newReplyEnabled());
+            case PENDING_REPLY -> Boolean.TRUE.equals(events.replyPendingEnabled());
             case POST_PUBLISHED -> Boolean.TRUE.equals(events.postPublishedEnabled());
             case POST_REMOVED -> Boolean.TRUE.equals(events.postRemovedEnabled());
             case USER_REGISTERED -> Boolean.TRUE.equals(events.userRegisteredEnabled());

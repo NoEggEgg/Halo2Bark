@@ -63,6 +63,18 @@ class SummaryComposerTest {
     }
 
     @Test
+    @DisplayName("合并摘要：回复待审核有专属标题（与评论待审核区分）")
+    void mergedPendingReplyTitle() {
+        var items = List.of(
+                item(Judgement.PENDING_REPLY, "文章标题", "一", "https://site/p/1"),
+                item(Judgement.PENDING_REPLY, "文章标题", "二", "https://site/p/1"));
+
+        var summary = SummaryComposer.merged(Judgement.PENDING_REPLY, items, 0, null);
+
+        assertThat(summary.title()).isEqualTo("🕓 2 条回复待审核");
+    }
+
+    @Test
     @DisplayName("限流摘要：标题为 PRD 原文，正文按事件类型归纳")
     void overflowBreaksDownByType() {
         var items = List.of(

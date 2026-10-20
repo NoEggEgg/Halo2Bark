@@ -43,7 +43,8 @@ public class CommentReconciler extends CreateReconciler<Comment> {
                 owner == null ? null : owner.getDisplayName(),
                 spec.getContent(),
                 Boolean.TRUE.equals(spec.getApproved()),
-                displayTime(spec.getCreationTime(), comment.getMetadata())));
+                displayTime(spec.getCreationTime(), comment.getMetadata()),
+                Boolean.TRUE.equals(spec.getHidden())));
     }
 
     private static SiteEvent.SubjectRef toSubjectRef(Ref ref) {
