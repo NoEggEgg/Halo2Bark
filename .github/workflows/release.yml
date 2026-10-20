@@ -35,7 +35,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: build/libs/*.jar
-          # 发行说明：随 tag 一并提交的简版说明（面向普通用户），末尾自带链接。
+          # 发行说明：随 tag 一并提交的简版说明（面向普通用户），末尾不带任何链接块。
           # 不启用自动生成（generate_release_notes）——GitHub 会在末尾附加
           # 「Full Changelog」对比链接，用户偏好不需要。
           body_path: .github/release-notes.md
