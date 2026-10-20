@@ -15,6 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 import run.halo.app.content.comment.CommentSubject;
+import run.halo.app.core.extension.content.Comment;
 import run.halo.app.core.extension.content.Post;
 import run.halo.app.extension.ExtensionClient;
 import run.halo.app.extension.Ref;
@@ -75,7 +76,7 @@ class HaloSubjectResolverTest {
                 new SiteEvent.CommentCreated("c-1", ref, "User", "bob", "Bob", "hi", false, null));
 
         assertThat(resolved.title()).isEqualTo("文章标题");
-        assertThat(resolved.url()).isEqualTo("https://site/archives/p-1");
+        assertThat(resolved.url()).isEqualTo("https://site/archives/p-1#halo-comment=c-1");
     }
 
     @Test
@@ -174,7 +175,7 @@ class HaloSubjectResolverTest {
                 new SiteEvent.CommentCreated("c-1", ref, "User", "bob", "Bob", "hi", false, null));
 
         assertThat(resolved.title()).isEqualTo("文章标题");
-        assertThat(resolved.url()).isEqualTo("https://site/archives/p-1");
+        assertThat(resolved.url()).isEqualTo("https://site/archives/p-1#halo-comment=c-1");
     }
 
     @Test
@@ -189,6 +190,88 @@ class HaloSubjectResolverTest {
                 new SiteEvent.CommentCreated("c-1", ref, "User", "bob", "Bob", "hi", false, null));
 
         assertThat(resolved.title()).isEqualTo("文章标题");
+    }
+
+    @Test
+    @DisplayName("回复事件：链接附加 halo-comment 与 reply 双参数，直达楼中楼该条回复")
+    void replyAnchorsToCommentAndReply() {
+        var comment = new Comment();
+        var commentSpec = new Comment.CommentSpec();
+        commentSpec.setSubjectRef(haloRef("content.halo.run", "v1alpha1", "Post", "p-1"));
+        comment.setSpec(commentSpec);
+        when(client.fetch(Comment.class, "c-1")).thenReturn(Optional.of(comment));
+        givenCommentSubjects(new FakeCommentSubject(true,
+                new CommentSubject.SubjectDisplay("文章标题", "/archives/p-1", "文章")));
+
+        var resolved = resolver.resolve(
+                new SiteEvent.ReplyCreated("r-1", "c-1", "User", "bob", "Bob", "回复", null, null));
+
+        assertThat(resolved.title()).isEqualTo("文章标题");
+        assertThat(resolved.url())
+                .isEqualTo("https://site/archives/p-1#halo-comment=c-1&reply=r-1");
+    }
+
+    @Test
+    @DisplayName("来源解析失败（链接为空）时不加 fragment，仍降级站点首页")
+    void blankSubjectUrlKeepsHomeFallback() {
+        givenCommentSubjects(new FakeCommentSubject(false, null));
+
+        var ref = new SiteEvent.SubjectRef("moment.halo.run", "v1alpha1", "Moment", "m-1");
+        var resolved = resolver.resolve(
+                new SiteEvent.CommentCreated("c-1", ref, "User", "bob", "Bob", "hi", false, null));
+
+        assertThat(resolved.url()).isEqualTo("https://site/");
+    }
+
+    @Test
+    @DisplayName("回复的父评论缺失 subjectRef 时解析为空，链接降级站点首页且不加 fragment")
+    void replyWithSubjectlessParentCommentFallsBackToHome() {
+        var comment = new Comment();
+        var commentSpec = new Comment.CommentSpec();
+        comment.setSpec(commentSpec);
+        when(client.fetch(Comment.class, "c-orphan")).thenReturn(Optional.of(comment));
+        givenCommentSubjects(new FakeCommentSubject(true,
+                new CommentSubject.SubjectDisplay("不应被使用", "/archives/p-1", "文章")));
+
+        var resolved = resolver.resolve(
+                new SiteEvent.ReplyCreated("r-1", "c-orphan", "User", "bob", "Bob", "回复", null, null));
+
+        assertThat(resolved.title()).isEmpty();
+        assertThat(resolved.url()).isEqualTo("https://site/");
+    }
+
+    @Test
+    @DisplayName("commentPermalink：与 Halo CommentPermalinkService 同规则拒绝非法链接")
+    void commentPermalinkRejectsInvalidUrls() {
+        // opaque URI（mailto: 等）
+        assertThat(HaloSubjectResolver.commentPermalink("mailto:a@b.c", "c-1", null)).isNull();
+        // 非 http(s) 协议
+        assertThat(HaloSubjectResolver.commentPermalink("ftp://site/p", "c-1", null)).isNull();
+        // 既无协议又无 path
+        assertThat(HaloSubjectResolver.commentPermalink("?query-only", "c-1", null)).isNull();
+        // 评论对象名缺失
+        assertThat(HaloSubjectResolver.commentPermalink("https://site/p", " ", null)).isNull();
+        assertThat(HaloSubjectResolver.commentPermalink(null, "c-1", null)).isNull();
+        // 主体链接为空
+        assertThat(HaloSubjectResolver.commentPermalink("", "c-1", null)).isNull();
+    }
+
+    @Test
+    @DisplayName("commentPermalink：替换既有 fragment 而非叠加出两个 #")
+    void commentPermalinkReplacesExistingFragment() {
+        assertThat(HaloSubjectResolver.commentPermalink("https://site/p#old", "c-1", "r-1"))
+                .isEqualTo("https://site/p#halo-comment=c-1&reply=r-1");
+        assertThat(HaloSubjectResolver.commentPermalink("https://site/p#old", "c-1", null))
+                .isEqualTo("https://site/p#halo-comment=c-1");
+    }
+
+    private static Ref haloRef(String group, String version, String kind, String name) {
+        var ref = new Ref();
+        ref.setGroup(group);
+        ref.setVersion(version);
+        ref.setKind(kind);
+        ref.setName(name);
+        return ref;
     }
 
     /** 手写的 CommentSubject 实现，避免 Mockito 在泛型接口上的复杂性。 */

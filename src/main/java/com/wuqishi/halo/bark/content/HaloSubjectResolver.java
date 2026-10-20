@@ -3,6 +3,9 @@ package com.wuqishi.halo.bark.content;
 import com.wuqishi.halo.bark.BarkConstants;
 import com.wuqishi.halo.bark.Masking;
 import com.wuqishi.halo.bark.event.SiteEvent;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -25,6 +28,8 @@ import run.halo.app.plugin.extensionpoint.ExtensionGetter;
  *   <li>评论 / 回复：由 {@code subjectRef} 找到 {@code supports(ref)} 的 {@link CommentSubject} 扩展，
  *       取其 {@code getSubjectDisplay(name)} 的 {@code title} / {@code url}。第三方注册的评论主体
  *       （如「瞬间」）只要实现了该扩展点即自动支持，无需本插件适配。</li>
+ *   <li>评论 / 回复再附加 Halo 2.27 的统一固定链接 fragment（{@code #halo-comment=...}），
+ *       点击通知直达该条讨论，见 {@link #commentPermalink}。</li>
  *   <li>所有链接一律经 {@link ExternalLinkProcessor#processLink(String)} 绝对化。</li>
  *   <li><b>兜底</b>：取不到链接时降级为站点首页（{@code processLink("/")}）。</li>
  * </ul>
@@ -49,6 +54,16 @@ public class HaloSubjectResolver implements SubjectResolver {
     /** 用户 / 设备类事件没有业务主体，跳转 Console 的用户管理页（PRD 5.5）。 */
     private static final String USER_CONSOLE_PATH = "/console/users";
 
+    /**
+     * Halo 2.27 评论 / 回复统一固定链接的 fragment 前缀（PR #10318）。
+     *
+     * <p>完整格式：{@code #halo-comment=<commentName>} 定位评论，
+     * {@code #halo-comment=<commentName>&reply=<replyName>} 定位楼中楼里的某条回复。
+     * 与 Halo 服务端 {@code CommentPermalinkService.getPermalink} 逐字一致——插件与服务端
+     * 生成同一链接，Console 与手机通知跳过去才是同一个地方。
+     */
+    private static final String COMMENT_FRAGMENT_PREFIX = "halo-comment=";
+
     private final ExtensionClient client;
     private final ExtensionGetter extensionGetter;
     private final ExternalLinkProcessor linkProcessor;
@@ -65,12 +80,74 @@ public class HaloSubjectResolver implements SubjectResolver {
     public ResolvedSubject resolve(SiteEvent event) {
         var raw = switch (event) {
             case SiteEvent.PostChanged e -> fromPost(e);
-            case SiteEvent.CommentCreated e -> fromSubjectRef(e.subjectRef());
-            case SiteEvent.ReplyCreated e -> fromParentComment(e.commentName());
+            case SiteEvent.CommentCreated e ->
+                anchorToComment(fromSubjectRef(e.subjectRef()), e.commentName(), null);
+            case SiteEvent.ReplyCreated e ->
+                anchorToComment(fromParentComment(e.commentName()), e.commentName(), e.replyName());
             case SiteEvent.UserCreated e -> new ResolvedSubject("", USER_CONSOLE_PATH);
             case SiteEvent.DeviceCreated e -> new ResolvedSubject("", USER_CONSOLE_PATH);
         };
         return absolute(raw);
+    }
+
+    /**
+     * 为评论 / 回复的来源解析结果附加 2.27 统一固定链接 fragment。
+     *
+     * <p>主体链接为空（解析失败，将降级为站点首页）或 URL 非法时保持原样——此时加 fragment
+     * 没有意义。主题评论组件未实现 fragment 解析时（2.27 之前的主题），链接退化为普通
+     * 文章页链接，点击可达性不受影响。
+     */
+    private ResolvedSubject anchorToComment(ResolvedSubject subject, String commentName,
+            String replyName) {
+        if (subject.url().isBlank()) {
+            return subject;
+        }
+        var permalink = commentPermalink(subject.url(), commentName, replyName);
+        return permalink == null ? subject
+                : new ResolvedSubject(subject.title(), permalink, subject.kindName(),
+                        subject.image());
+    }
+
+    /**
+     * 构造评论 / 回复的统一固定链接，格式与 Halo 2.27 的
+     * {@code CommentPermalinkService.getPermalink} 一致：
+     * {@code <subjectUrl>#halo-comment=<commentName>[&reply=<replyName>]}。
+     *
+     * <p>拒绝条件与 Halo 逐条对齐（返回 {@code null} 表示保持原主体链接）：非 http(s) 协议、
+     * opaque URI、以及既无协议又无 path 的地址。手工字符串拼接而非
+     * {@code UriComponentsBuilder}：插件运行时类加载器不保证能见到 spring-web，且
+     * {@link URLEncoder} 对对象名（{@code [a-z0-9-]}）不发生转义，与 Halo 侧
+     * {@code build(true)} 的已编码语义等价。
+     */
+    static String commentPermalink(String subjectUrl, String commentName, String replyName) {
+        if (subjectUrl == null || subjectUrl.isBlank()
+                || commentName == null || commentName.isBlank()) {
+            return null;
+        }
+        try {
+            var uri = URI.create(subjectUrl);
+            var scheme = uri.getScheme();
+            if (uri.isOpaque()
+                    || (scheme != null && !"http".equalsIgnoreCase(scheme)
+                            && !"https".equalsIgnoreCase(scheme))
+                    || (scheme == null && (uri.getRawPath() == null || uri.getRawPath().isBlank()))) {
+                return null;
+            }
+            var fragment = COMMENT_FRAGMENT_PREFIX
+                    + URLEncoder.encode(commentName, StandardCharsets.UTF_8);
+            if (replyName != null && !replyName.isBlank()) {
+                fragment += "&reply=" + URLEncoder.encode(replyName, StandardCharsets.UTF_8);
+            }
+            // 替换既有 fragment（Halo 的 fragment() 同为替换语义），而非叠加出两个 '#'
+            var base = subjectUrl;
+            var hash = base.indexOf('#');
+            if (hash >= 0) {
+                base = base.substring(0, hash);
+            }
+            return base + '#' + fragment;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 
     private ResolvedSubject fromPost(SiteEvent.PostChanged e) {
