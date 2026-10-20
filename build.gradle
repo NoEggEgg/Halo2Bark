@@ -6,7 +6,7 @@ plugins {
 }
 
 group = 'com.wuqishi.halo.bark'
-version = '1.1.0'
+version = '1.1.1'
 
 repositories {
     maven {
@@ -20,7 +20,7 @@ repositories {
 }
 
 dependencies {
-    implementation platform('run.halo.tools.platform:plugin:2.26.0')
+    implementation platform('run.halo.tools.platform:plugin:2.27.0')
     compileOnly 'run.halo.app:api'
 
     // Lombok 版本对齐：freefair lombok 插件默认注入 1.18.42，而 platform BOM 已将
@@ -48,7 +48,7 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 halo {
-    version = '2.26.1'
+    version = '2.27.0'
 }
 
 test {

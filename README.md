@@ -6,7 +6,7 @@
 > 📦 仓库：<https://github.com/NoEggEgg/Halo2Bark>  
 > 🐛 反馈：<https://github.com/NoEggEgg/Halo2Bark/issues>
 
-当前版本 **v1.1.0**，要求 Halo **2.26.0** 及以上。
+当前版本 **v1.1.1**，要求 Halo **2.26.0** 及以上。
 
 ## 特性
 
