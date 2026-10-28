@@ -8,11 +8,13 @@ import com.wuqishi.halo.bark.push.NotificationCategory;
 import com.wuqishi.halo.bark.push.PushNotification;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -109,16 +111,22 @@ public class BarkTransport implements NotificationDelivery {
         var context = new DeliveryContext(notification, settings,
                 resolveGroup(settings, notification.category()), resolveIcon(settings));
 
-        var groups = new LinkedHashMap<String, List<DeviceSetting>>();
-        for (var device : targets) {
-            groups.computeIfAbsent(device.serverUrl(), key -> new ArrayList<>()).add(device);
+        // 分组仅改变请求顺序；结果必须回填原索引，不能把交错地址的设备配错。
+        var groups = new LinkedHashMap<String, List<Integer>>();
+        for (int i = 0; i < targets.size(); i++) {
+            groups.computeIfAbsent(targets.get(i).serverUrl(), key -> new ArrayList<>()).add(i);
         }
 
-        var results = new ArrayList<DeviceResult>();
+        var results = new DeviceResult[targets.size()];
         for (var entry : groups.entrySet()) {
-            results.addAll(deliverGroup(context, entry.getKey(), entry.getValue()));
+            var indexes = entry.getValue();
+            var group = indexes.stream().map(targets::get).toList();
+            var delivered = deliverGroup(context, entry.getKey(), group);
+            for (int i = 0; i < indexes.size(); i++) {
+                results[indexes.get(i)] = delivered.get(i);
+            }
         }
-        var report = new DeliveryReport(results);
+        var report = new DeliveryReport(Arrays.asList(results));
         logSummary(report);
         if (trackHealth) {
             lastDelivery.set(new LastDelivery(Instant.now(), report.results().size(),
@@ -130,51 +138,48 @@ public class BarkTransport implements NotificationDelivery {
     }
 
     /**
-     * 健康跟踪：把本轮各设备结果交给 {@link DeliveryHealthTracker}，发送其产出的告警/恢复通知。
-     *
-     * <p>目标选择：失败告警经**本轮成功**的其他设备送达（失败设备收不到自己的告警）；
-     * 恢复通知经**刚恢复**的设备送达——成功即恢复的证明。无可用目标时放弃告警
-     * （单设备站点常见），状态保持告警态，恢复通知稍后仍会发出。
-     *
-     * <p>结果与设备按下标一一对应：结果列表严格按设备处理顺序构建（分组迭代保序、
-     * 分片内保序），构造上长度恒等；不一致视为程序缺陷，跳过本次跟踪。
+     * 失败告警发往本轮成功的设备；恢复更新同时送达原告警接收者与恢复设备。
+     * 接收者按指纹关联，并从当前配置解析，避免向已移除或禁用的设备发送。
      */
     private void sendHealthNotifications(PushSettings settings, List<DeviceSetting> targets,
             DeliveryReport report) {
         var results = report.results();
-        if (results.size() != targets.size()) {
-            log.debug("{} 健康跟踪跳过：结果数与设备数不一致（{} != {}）",
-                    BarkConstants.LOG_PREFIX, results.size(), targets.size());
-            return;
-        }
-        var healthy = new ArrayList<DeviceSetting>();
+        var healthy = IntStream.range(0, targets.size())
+                .filter(i -> results.get(i).success()).mapToObj(targets::get).toList();
         for (int i = 0; i < targets.size(); i++) {
-            if (results.get(i).success()) {
-                healthy.add(targets.get(i));
+            tracker.notifyOnDeviceResult(targets.get(i), results.get(i), settings, health -> {
+                var sendTargets = health.recovery() ? recoveryTargets(health, settings) : healthy;
+                if (sendTargets.isEmpty()) {
+                    log.debug("{} 设备「{}」投递失败且无其他可用设备，本次告警无法送达",
+                            BarkConstants.LOG_PREFIX, health.device().name());
+                    return List.of();
+                }
+                try {
+                    // 不递归跟踪健康通知；只登记实际收到告警的设备。
+                    var delivered = doSend(health.notification(), settings, sendTargets, false);
+                    return IntStream.range(0, sendTargets.size())
+                            .filter(index -> delivered.results().get(index).success())
+                            .mapToObj(sendTargets::get).toList();
+                } catch (RuntimeException e) {
+                    log.warn("{} 健康通知发送失败：{}", BarkConstants.LOG_PREFIX,
+                            Masking.sanitize(e.toString()));
+                    return List.of();
+                }
+            });
+        }
+    }
+
+    private static List<DeviceSetting> recoveryTargets(DeliveryHealthTracker.HealthNotice health,
+            PushSettings settings) {
+        var targets = new LinkedHashMap<String, DeviceSetting>();
+        targets.put(DeliveryHealthTracker.fingerprint(health.device()), health.device());
+        for (var device : settings.deliverableDevices()) {
+            var fingerprint = DeliveryHealthTracker.fingerprint(device);
+            if (health.recipients().contains(fingerprint)) {
+                targets.put(fingerprint, device);
             }
         }
-        for (int i = 0; i < targets.size(); i++) {
-            var notice = tracker.onDeviceResult(targets.get(i), results.get(i), settings);
-            if (notice.isEmpty()) {
-                continue;
-            }
-            var health = notice.get();
-            var sendTargets = health.recovery()
-                    ? List.of(targets.get(i))
-                    : List.copyOf(healthy);
-            if (sendTargets.isEmpty()) {
-                log.debug("{} 设备「{}」投递失败且无其他可用设备，本次告警无法送达",
-                        BarkConstants.LOG_PREFIX, targets.get(i).name());
-                continue;
-            }
-            try {
-                // 健康通知不走跟踪（trackHealth=false），避免递归与状态污染
-                doSend(health.notification(), settings, sendTargets, false);
-            } catch (RuntimeException e) {
-                log.warn("{} 健康通知发送失败：{}", BarkConstants.LOG_PREFIX,
-                        Masking.sanitize(e.toString()));
-            }
-        }
+        return List.copyOf(targets.values());
     }
 
     /** 最近一次投递摘要；尚未投递过时为空（供状态端点读取）。 */

@@ -12,9 +12,14 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.springframework.stereotype.Component;
 
 /**
@@ -32,7 +37,7 @@ import org.springframework.stereotype.Component;
  * </ul>
  *
  * <p><b>发送目标由调用方决定</b>（{@link BarkTransport}）：失败告警只能经**本轮成功**的其他设备
- * 送达（失败设备本身收不到）；恢复通知经**刚恢复**的设备送达——成功本身即是恢复的证明。
+ * 送达（失败设备本身收不到）；恢复通知发往**成功收到告警且仍启用**的设备与刚恢复的设备。
  *
  * <p>id 稳定绑定设备指纹（Key + 服务地址的 SHA-256 截断），**不含 Key 明文**——id 会出现在
  * 请求参数中，绝不能泄露凭据；同一设备的历次告警/恢复共用一个 id，如同一条状态灯。
@@ -54,6 +59,8 @@ public class DeliveryHealthTracker {
             DateTimeFormatter.ofPattern("M月d日 HH:mm").withZone(ZoneId.systemDefault());
 
     private final ConcurrentMap<String, Health> states = new ConcurrentHashMap<>();
+    // 固定数量的条带锁避免无界增长；同设备告警确认与恢复处理串行，HTTP 不进入 compute。
+    private final Object[] noticeLocks = Stream.generate(Object::new).limit(MAX_TRACKED).toArray();
     private final Clock clock;
 
     public DeliveryHealthTracker() {
@@ -79,14 +86,15 @@ public class DeliveryHealthTracker {
         var outcome = states.compute(fingerprint, (k, prev) -> {
             previous[0] = prev;
             if (result.success()) {
-                return new Health(0, false, null);
+                return new Health(0, false, null, Set.of());
             }
             int failures = (prev == null ? 0 : prev.consecutiveFailures()) + 1;
             boolean wasAlerted = prev != null && prev.alerted();
             // 首次达到阈值即进入告警态并分配 id；此后持续失败保持告警态，不重复产出
             boolean nowAlerted = wasAlerted || failures >= ALERT_THRESHOLD;
             String alertId = wasAlerted && prev != null ? prev.alertId() : ID_PREFIX + fingerprint;
-            return new Health(failures, nowAlerted, alertId);
+            return new Health(failures, nowAlerted, alertId,
+                    prev == null ? Set.of() : prev.recipients());
         });
         evictIfOversized();
 
@@ -97,14 +105,36 @@ public class DeliveryHealthTracker {
                 && outcome.consecutiveFailures() == ALERT_THRESHOLD && !wasAlerted) {
             return Optional.of(new HealthNotice(
                     failureAlert(device, outcome.alertId(), outcome.consecutiveFailures(), now),
-                    device, false));
+                    device, false, Set.of()));
         }
         // 恢复沿：成功且此前处于告警态 → 产出恢复通知（同 id 原地替换失败告警）
         if (result.success() && wasAlerted) {
             return Optional.of(new HealthNotice(
-                    recoveryNotice(device, previous[0].alertId(), now), device, true));
+                    recoveryNotice(device, previous[0].alertId(), now), device, true,
+                    previous[0].recipients()));
         }
         return Optional.empty();
+    }
+
+    /**
+     * 同一设备的状态迁移、健康通知发送与接收确认顺序执行，防止恢复早于告警确认。
+     * sender 返回实际发送成功的设备；只存指纹，不保留凭据或过期设备配置。
+     */
+    void notifyOnDeviceResult(DeviceSetting device, DeviceResult result, PushSettings settings,
+            Function<HealthNotice, List<DeviceSetting>> sender) {
+        var fingerprint = fingerprint(device);
+        var lock = noticeLocks[Math.floorMod(fingerprint.hashCode(), noticeLocks.length)];
+        synchronized (lock) {
+            onDeviceResult(device, result, settings).ifPresent(notice -> {
+                var delivered = sender.apply(notice);
+                if (!notice.recovery()) {
+                    var recipients = delivered.stream().map(DeliveryHealthTracker::fingerprint)
+                            .collect(Collectors.toUnmodifiableSet());
+                    states.computeIfPresent(fingerprint, (key, health) -> new Health(
+                            health.consecutiveFailures(), health.alerted(), health.alertId(), recipients));
+                }
+            });
+        }
     }
 
     private PushNotification failureAlert(DeviceSetting device, String alertId, int failures,
@@ -172,15 +202,16 @@ public class DeliveryHealthTracker {
      * 一次健康通知的产出。
      *
      * @param notification 告警或恢复通知（告警/恢复共用同一 id 以原地替换）
-     * @param device 状态发生迁移的设备；恢复场景下它也是恢复通知的送达目标
-     * @param recovery {@code true} 为恢复通知（送达刚恢复的设备）；{@code false} 为失败告警
-     *     （送达本轮成功的其他设备，失败设备收不到自己的告警）
+     * @param device 状态发生迁移的设备；恢复通知也送达该设备
+     * @param recovery {@code true} 为恢复通知；{@code false} 为失败告警
+     * @param recipients 成功收到本次故障告警的设备指纹，恢复时从当前配置解析接收者
      */
     public record HealthNotice(PushNotification notification, DeviceSetting device,
-            boolean recovery) {
+            boolean recovery, Set<String> recipients) {
     }
 
     /** 单台设备的健康状态。 */
-    private record Health(int consecutiveFailures, boolean alerted, String alertId) {
+    private record Health(int consecutiveFailures, boolean alerted, String alertId,
+            Set<String> recipients) {
     }
 }

@@ -1,10 +1,16 @@
 package com.wuqishi.halo.bark.transport;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.wuqishi.halo.bark.config.DeviceSetting;
 import com.wuqishi.halo.bark.config.PushSettings;
-import com.wuqishi.halo.bark.transport.DeliveryFailure;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -64,6 +70,52 @@ class DeliveryHealthTrackerTest {
         assertThat(tracker.onDeviceResult(device("KEY-A-1"), fail(), settings)).isEmpty();
         assertThat(tracker.onDeviceResult(device("KEY-A-1"), ok(), settings)).isEmpty();
         assertThat(tracker.onDeviceResult(device("KEY-A-1"), fail(), settings)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("告警发送尚未确认时，恢复须等待并携带成功接收者")
+    void recoveryWaitsForAlertAcknowledgement() throws Exception {
+        var failed = device("KEY-A-1");
+        var receiver = device("KEY-B-2");
+        var alertSending = new CountDownLatch(1);
+        var releaseAlert = new CountDownLatch(1);
+        var recoveryStarted = new CountDownLatch(1);
+        var recovered = new AtomicReference<DeliveryHealthTracker.HealthNotice>();
+        tracker.notifyOnDeviceResult(failed, fail(), settings, notice -> List.of());
+
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            var alert = workers.submit(() -> tracker.notifyOnDeviceResult(failed, fail(), settings,
+                    notice -> {
+                        alertSending.countDown();
+                        try {
+                            assertThat(releaseAlert.await(5, TimeUnit.SECONDS)).isTrue();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new AssertionError(e);
+                        }
+                        return List.of(receiver);
+                    }));
+            try {
+                assertThat(alertSending.await(5, TimeUnit.SECONDS)).isTrue();
+                var recovery = workers.submit(() -> {
+                    recoveryStarted.countDown();
+                    tracker.notifyOnDeviceResult(failed, ok(), settings, notice -> {
+                        recovered.set(notice);
+                        return List.of(failed, receiver);
+                    });
+                });
+                assertThat(recoveryStarted.await(5, TimeUnit.SECONDS)).isTrue();
+                assertThatThrownBy(() -> recovery.get(100, TimeUnit.MILLISECONDS))
+                        .isInstanceOf(TimeoutException.class);
+                releaseAlert.countDown();
+                alert.get(5, TimeUnit.SECONDS);
+                recovery.get(5, TimeUnit.SECONDS);
+            } finally {
+                releaseAlert.countDown();
+            }
+        }
+        assertThat(recovered.get().recipients())
+                .containsExactly(DeliveryHealthTracker.fingerprint(receiver));
     }
 
     @Test
