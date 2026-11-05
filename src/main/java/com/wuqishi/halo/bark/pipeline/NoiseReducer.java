@@ -28,24 +28,24 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
-/**
- * 降噪层状态机（PRD 5.4）：安全穿透 → 静默暂存 → 合并 → 限流。
- *
- * <p>处理顺序不可调换：
- * <ul>
- *   <li><b>安全事件</b>直接送达，不参与合并、不计入限流、不受静默约束（PRD 5.4 优先级）；</li>
- *   <li><b>静默时段</b>内互动/普通类暂存，时段结束合并为一条摘要；</li>
- *   <li><b>合并</b>委托 {@link MergeWindowTracker}——按判定语义分桶，正常间隔的通知零延迟，
- *       只有真正的爆发才合并；</li>
- *   <li><b>限流</b>每自然分钟最多 {@value #RATE_LIMIT_PER_MINUTE} 条，超出的暂存，
- *       该分钟结束时补发一条聚合摘要，**不丢弃**。</li>
- * </ul>
- *
- * <p>合并/限流/静默为内建行为，不提供开关；可配置的只有合并窗口与静默时段区间。
- *
- * <p>线程约定：{@link #accept} 由投递线程调用；冲刷由定时器驱动，但**阻塞投递一律转交专用
- * 执行器**，不在定时器线程执行 I/O。
- */
+    /**
+     * 降噪层状态机（PRD 5.4）：安全穿透 → 静默暂存 → 合并 → 限流。
+     *
+     * <p>处理顺序不可调换：
+     * <ul>
+     *   <li><b>安全事件</b>直接送达，不参与合并、不计入限流、不受静默约束（PRD 5.4 优先级）；</li>
+     *   <li><b>静默时段</b>内互动/普通类暂存，时段结束合并为一条摘要；</li>
+     *   <li><b>合并</b>委托 {@link MergeWindowTracker}——按判定语义分桶，正常间隔的通知零延迟，
+     *       只有真正的爆发才合并；管理员可把合并窗口配置为「关闭」，此时逐条实时送达；</li>
+     *   <li><b>限流</b>每自然分钟最多 {@value #RATE_LIMIT_PER_MINUTE} 条，超出的暂存，
+     *       该分钟结束时补发一条聚合摘要，**不丢弃**；合并关闭时同样生效。</li>
+     * </ul>
+     *
+     * <p>限流/静默为内建行为，不提供开关；可配置的是合并窗口（含「关闭」）与静默时段区间。
+     *
+     * <p>线程约定：{@link #accept} 由投递线程调用；冲刷由定时器驱动，但**阻塞投递一律转交专用
+     * 执行器**，不在定时器线程执行 I/O。
+     */
 @Slf4j
 @Component
 public class NoiseReducer {
@@ -191,8 +191,8 @@ public class NoiseReducer {
             running = true;
             sweeper.scheduleWithFixedDelay(this::sweep, SWEEP_INTERVAL.toMillis(),
                     SWEEP_INTERVAL.toMillis(), TimeUnit.MILLISECONDS);
-            log.info("{} 降噪层已启动：限流 {} 条/分钟，合并阈值 {} 条", BarkConstants.LOG_PREFIX,
-                    RATE_LIMIT_PER_MINUTE, MergeWindowTracker.MERGE_THRESHOLD);
+            log.info("{} 降噪层已启动：限流 {} 条/分钟", BarkConstants.LOG_PREFIX,
+                    RATE_LIMIT_PER_MINUTE);
         }
     }
 
@@ -286,6 +286,12 @@ public class NoiseReducer {
 
     /** 交给合并窗口跟踪器，并按返回的动作立即送达或产出合并摘要。 */
     private void merge(Judgement judgement, PushNotification notification, PushSettings settings) {
+        if (settings.mergeDisabled()) {
+            // 合并窗口已关闭：逐条原样实时送达（仍受限流约束——超出配额进溢出缓冲，
+            // 该分钟结束后聚合补发，刷屏保护不因关闭合并而失效）
+            deliverCharged(new BufferedNotification(judgement, notification, settings));
+            return;
+        }
         var action = mergeWindows.submit(judgement,
                 new BufferedNotification(judgement, notification, settings), settings);
         if (action.immediate() != null) {

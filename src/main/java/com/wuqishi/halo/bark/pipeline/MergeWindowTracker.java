@@ -134,8 +134,10 @@ final class MergeWindowTracker {
     /**
      * 合并窗口时长：配置形如 {@code "2m"}，缺失 / 非法 / 越界 / 非正时回退默认值。
      *
-     * <p>{@code Duration.ofMinutes(Long.parseLong(...))} 对超长数字（如 21 位）会抛
-     * {@code NumberFormatException} / {@code ArithmeticException}，且 {@code "0m"} 会让窗口瞬间到期、
+     * <p>{@code "0"} / {@code "0m"} 表示「关闭合并」，由 {@code NoiseReducer} 在进入本类之前
+     * 短路处理，正常不会走到这里；若仍到达（防御），按默认窗口处理——
+     * {@code Duration.ofMinutes(Long.parseLong(...))} 对超长数字（如 21 位）会抛
+     * {@code NumberFormatException} / {@code ArithmeticException}，且零时长窗口会让窗口瞬间到期、
      * 退化为「每条都触发到期冲刷」失去合并意义。这些非法值不应让一次普通投递异常丢事件，故一律回退默认。
      */
     static Duration windowOf(PushSettings settings) {

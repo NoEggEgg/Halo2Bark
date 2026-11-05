@@ -27,7 +27,8 @@ import java.util.Objects;
  * @param autoCopy 是否自动复制
  * @param copy 复制内容；空表示复制通知正文
  * @param contentMaxLength 内容长度上限，取值 50–500
- * @param mergeWindow 合并窗口（{@code 1m} / {@code 2m} / {@code 5m}）
+ * @param mergeWindow 合并窗口（{@code 0} 关闭 / {@code 1m} / {@code 2m} / {@code 5m}）；
+ *        关闭后逐条实时送达，不再产出合并摘要（见 {@link #mergeDisabled()}）
  * @param quietHoursEnabled 是否启用静默时段
  * @param quietHoursFrom 静默开始时间
  * @param quietHoursTo 静默结束时间
@@ -74,6 +75,8 @@ public record PushSettings(
     public static final String DEFAULT_ACTION = "url";
     public static final String DEFAULT_CONTENT_MAX_LENGTH = "200";
     public static final String DEFAULT_MERGE_WINDOW = "2m";
+    /** 合并窗口的「关闭」取值：逐条实时送达，不产出合并摘要。 */
+    public static final String MERGE_WINDOW_OFF = "0";
     public static final String DEFAULT_QUIET_HOURS_FROM = "23:00";
     public static final String DEFAULT_QUIET_HOURS_TO = "07:00";
     public static final String DEFAULT_ENCRYPT_ALGORITHM = "AES128";
@@ -120,6 +123,15 @@ public record PushSettings(
     public int contentMaxLengthOrDefault() {
         var parsed = ConfigValues.intOrNull(contentMaxLength);
         return parsed == null ? Integer.parseInt(DEFAULT_CONTENT_MAX_LENGTH) : parsed;
+    }
+
+    /**
+     * 合并窗口是否已关闭（取值 {@code "0"}，宽容接受 {@code "0m"}——经 json-config 直改配置时
+     * 可能带上单位后缀）。关闭后逐条实时送达，不再产出合并摘要；限流与静默时段不受影响。
+     */
+    public boolean mergeDisabled() {
+        var value = mergeWindow == null ? "" : mergeWindow.trim();
+        return MERGE_WINDOW_OFF.equals(value) || "0m".equals(value);
     }
 
     /** 是否应当设置角标：开关开启、数字可解析且非负（负数视为非法，不向 Bark 发送）。 */

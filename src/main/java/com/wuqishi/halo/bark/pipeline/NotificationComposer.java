@@ -24,8 +24,10 @@ import run.halo.app.infra.ExternalLinkProcessor;
  * <ul>
  *   <li><b>标题</b>简短并含 emoji，必要时附上**评论主体类型**（如「新评论 · 文章」）；</li>
  *   <li><b>副标题</b>承载来源（文章标题 / 评论主体标题），由 {@link SubjectResolver} 解析；</li>
- *   <li><b>正文</b>首行是「谁 · 何时」，回复再带一行「回复了 @某某」，其后是内容；内容经
- *       {@link HtmlText} 由 **HTML 转纯文本**（Halo 存储的评论正文是 HTML）；整体按配置上限优雅截断；</li>
+ *   <li><b>正文</b>首行是「谁」（评论者显示名），回复再带一行「回复了 @某某」，其后是内容；
+ *       不在正文里写绝对时间——iOS 通知横幅自带到达时间，归档回看同样有时间戳，写进正文只会
+ *       挤占内容长度上限；内容经 {@link HtmlText} 由 **HTML 转纯文本**（Halo 存储的评论正文
+ *       是 HTML），整体按配置上限优雅截断；</li>
  *   <li><b>逐条图标</b>取评论者头像（仅注册用户有），为空时由传输层回退全局图标；
  *       头像与配图一律经 {@code ExternalLinkProcessor} 绝对化（相对地址 → 可下载的外部地址）；</li>
  *   <li><b>配图</b>取评论内容中的首张图片，展开通知可见；</li>
@@ -102,7 +104,7 @@ public class NotificationComposer {
                                 subject.kindName()),
                         subject.title(),
                         truncate(interactionBody(e.ownerKind(), e.ownerName(), e.ownerDisplayName(),
-                                e.content(), e.creationTime(), null,
+                                e.content(), null,
                                 e.hidden() ? PRIVATE_COMMENT_LABEL : null), contentMaxLength),
                         url,
                         NotificationCategory.INTERACTIVE,
@@ -119,7 +121,7 @@ public class NotificationComposer {
                                 subject.kindName()),
                         subject.title(),
                         truncate(interactionBody(e.ownerKind(), e.ownerName(), e.ownerDisplayName(),
-                                e.content(), e.creationTime(), e.quoteReplyName(),
+                                e.content(), e.quoteReplyName(),
                                 e.hidden() ? PRIVATE_REPLY_LABEL : null), contentMaxLength),
                         url,
                         NotificationCategory.INTERACTIVE,
@@ -129,13 +131,16 @@ public class NotificationComposer {
             }
             case SiteEvent.PostChanged e -> {
                 // 删除/取消发布的文章原链接已是死链，点击直达回收站；发布事件仍跳文章页
-                var url = e.change() == SiteEvent.PostChange.PUBLISHED
-                        ? subject.url()
-                        : processLink(CONSOLE_DELETED_POSTS_URL);
+                var published = e.change() == SiteEvent.PostChange.PUBLISHED;
+                var url = published ? subject.url() : processLink(CONSOLE_DELETED_POSTS_URL);
+                // 发布通知正文带文章摘要（status.excerpt / 自定义摘要），经 toMarkdown 防
+                // 自定义摘要里粘进 HTML 标签；无摘要时正文为空，仅标题 + 封面配图
+                var body = published ? truncate(HtmlText.toMarkdown(subject.excerpt()),
+                        contentMaxLength) : "";
                 yield new PushNotification(
-                        e.change() == SiteEvent.PostChange.PUBLISHED ? "📝 文章已发布" : "🗑️ 文章已删除或取消发布",
+                        published ? "📝 文章已发布" : "🗑️ 文章已删除或取消发布",
                         subject.title(),
-                        "",
+                        body,
                         url,
                         NotificationCategory.NORMAL,
                         true,
@@ -157,7 +162,10 @@ public class NotificationComposer {
                     truncate(deviceBody(e), contentMaxLength),
                     subject.url(),
                     NotificationCategory.SECURITY,
-                    true);
+                    true,
+                    // 登录账号的头像作为逐条图标（与评论者头像同一机制）；取不到时回退全局图标
+                    icon(avatar("User", e.principalName())),
+                    "");
         };
     }
 
@@ -211,17 +219,18 @@ public class NotificationComposer {
     }
 
     /**
-     * 评论 / 回复正文：私密标注（如有）→ 首行「谁 · 何时」→ 回复再带一行「回复了 @某某」→ 内容。
+     * 评论 / 回复正文：私密标注（如有）→ 首行「谁」→ 回复再带一行「回复了 @某某」→ 内容。
      *
      * <p>内容经 HTML 转纯文本——Halo 的 `Comment.spec.content` / `Reply.spec.content` 是 HTML。
+     * 首行不含时间：通知横幅与归档自带到达时间，正文里的绝对时间只会挤占内容长度上限。
      *
      * @param privateLabel 私密标注行；非空表示这是公众不可见的私密评论 / 回复
      */
     private String interactionBody(String ownerKind, String ownerName, String displayName,
-            String htmlContent, Instant creationTime, String quoteReplyName, String privateLabel) {
+            String htmlContent, String quoteReplyName, String privateLabel) {
         var lines = new ArrayList<String>();
         addIfPresent(lines, privateLabel);
-        addIfPresent(lines, metaLine(displayName, ownerName, creationTime));
+        addIfPresent(lines, authorLine(displayName, ownerName));
         if (quoteReplyName != null && !quoteReplyName.isBlank()) {
             var quoted = authorResolver.quotedReplyAuthorName(quoteReplyName);
             lines.add(quoted.isBlank() ? "回复了某条回复" : "回复了 @" + quoted);
@@ -231,14 +240,12 @@ public class NotificationComposer {
         return String.join("\n\n", lines);
     }
 
-    private static String metaLine(String displayName, String name, Instant creationTime) {
-        var who = displayName != null && !displayName.isBlank() ? displayName
-                : (name == null ? "" : name);
-        var when = creationTime == null ? "" : TIME_FORMAT.format(creationTime);
-        if (who.isBlank()) {
-            return when;
+    /** 作者行：优先显示名，缺失时用账号名；两者皆无则不输出该行。 */
+    private static String authorLine(String displayName, String name) {
+        if (displayName != null && !displayName.isBlank()) {
+            return displayName;
         }
-        return when.isBlank() ? who : who + " · " + when;
+        return name == null ? "" : name;
     }
 
     private static String userBody(SiteEvent.UserCreated user) {

@@ -105,7 +105,7 @@ public class HaloSubjectResolver implements SubjectResolver {
         var permalink = commentPermalink(subject.url(), commentName, replyName);
         return permalink == null ? subject
                 : new ResolvedSubject(subject.title(), permalink, subject.kindName(),
-                        subject.image());
+                        subject.image(), subject.excerpt());
     }
 
     /**
@@ -168,13 +168,34 @@ public class HaloSubjectResolver implements SubjectResolver {
                 var cover = post.getSpec() == null ? "" : post.getSpec().getCover();
                 var status = post.getStatusOrDefault();
                 var permalink = status == null ? "" : status.getPermalink();
-                return new ResolvedSubject(title, permalink, "", cover);
+                return new ResolvedSubject(title, permalink, "", cover, postExcerpt(post));
             }).orElse(ResolvedSubject.EMPTY);
         } catch (RuntimeException e) {
             log.warn("{} 解析文章来源失败：{}", BarkConstants.LOG_PREFIX,
                     Masking.sanitize(e.toString()));
             return ResolvedSubject.EMPTY;
         }
+    }
+
+    /**
+     * 文章摘要：优先 {@code status.excerpt}——Reconciler 已生成的最终摘要（自动截取与自定义
+     * 两种来源都在其中）；状态尚未生成时兜底自定义摘要原文 {@code spec.excerpt.raw}。
+     *
+     * <p>摘要用于「文章已发布」通知的正文。两者皆空（内容尚未渲染、或文章本无摘要）时返回空串，
+     * 通知正文保持为空，不影响投递。
+     */
+    private static String postExcerpt(Post post) {
+        var status = post.getStatusOrDefault();
+        var fromStatus = status == null ? "" : status.getExcerpt();
+        if (fromStatus != null && !fromStatus.isBlank()) {
+            return fromStatus;
+        }
+        var spec = post.getSpec();
+        if (spec == null || spec.getExcerpt() == null) {
+            return "";
+        }
+        var raw = spec.getExcerpt().getRaw();
+        return raw == null ? "" : raw;
     }
 
     private ResolvedSubject fromParentComment(String commentName) {
@@ -265,7 +286,8 @@ public class HaloSubjectResolver implements SubjectResolver {
     private ResolvedSubject absolute(ResolvedSubject subject) {
         var url = process(subject.url().isBlank() ? "/" : subject.url());
         var image = subject.image().isBlank() ? "" : process(subject.image());
-        return new ResolvedSubject(subject.title(), url, subject.kindName(), image);
+        return new ResolvedSubject(subject.title(), url, subject.kindName(), image,
+                subject.excerpt());
     }
 
     private String process(String link) {

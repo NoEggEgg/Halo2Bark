@@ -108,6 +108,63 @@ class HaloSubjectResolverTest {
     }
 
     @Test
+    @DisplayName("文章摘要取 status.excerpt（Reconciler 生成的最终摘要）")
+    void resolvesPostExcerpt() {
+        var post = new Post();
+        var spec = new Post.PostSpec();
+        spec.setTitle("文章标题");
+        post.setSpec(spec);
+        var status = new Post.PostStatus();
+        status.setPermalink("/archives/p-1");
+        status.setExcerpt("这是自动生成的摘要");
+        post.setStatus(status);
+        when(client.fetch(Post.class, "p-1")).thenReturn(Optional.of(post));
+
+        var resolved = resolver.resolve(new SiteEvent.PostChanged("p-1", SiteEvent.PostChange.PUBLISHED));
+
+        assertThat(resolved.excerpt()).isEqualTo("这是自动生成的摘要");
+    }
+
+    @Test
+    @DisplayName("status.excerpt 尚未生成时兜底自定义摘要原文 spec.excerpt.raw")
+    void fallsBackToRawExcerpt() {
+        var post = new Post();
+        var spec = new Post.PostSpec();
+        spec.setTitle("文章标题");
+        var excerpt = new Post.Excerpt();
+        excerpt.setAutoGenerate(false);
+        excerpt.setRaw("这是自定义摘要");
+        spec.setExcerpt(excerpt);
+        post.setSpec(spec);
+        var status = new Post.PostStatus();
+        status.setPermalink("/archives/p-1");
+        post.setStatus(status);
+        when(client.fetch(Post.class, "p-1")).thenReturn(Optional.of(post));
+
+        var resolved = resolver.resolve(new SiteEvent.PostChanged("p-1", SiteEvent.PostChange.PUBLISHED));
+
+        assertThat(resolved.excerpt()).isEqualTo("这是自定义摘要");
+    }
+
+    @Test
+    @DisplayName("两种摘要来源皆空时摘要为空串，不影响标题与链接")
+    void emptyExcerptWhenAbsent() {
+        var post = new Post();
+        var spec = new Post.PostSpec();
+        spec.setTitle("文章标题");
+        post.setSpec(spec);
+        var status = new Post.PostStatus();
+        status.setPermalink("/archives/p-1");
+        post.setStatus(status);
+        when(client.fetch(Post.class, "p-1")).thenReturn(Optional.of(post));
+
+        var resolved = resolver.resolve(new SiteEvent.PostChanged("p-1", SiteEvent.PostChange.PUBLISHED));
+
+        assertThat(resolved.excerpt()).isEmpty();
+        assertThat(resolved.title()).isEqualTo("文章标题");
+    }
+
+    @Test
     @DisplayName("无匹配的 CommentSubject 时链接降级为站点首页")
     void fallsBackToSiteHome() {
         givenCommentSubjects(new FakeCommentSubject(false, null));

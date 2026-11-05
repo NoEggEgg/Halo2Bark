@@ -146,6 +146,46 @@ class NoiseReducerTest {
     }
 
     @Test
+    @DisplayName("合并窗口关闭：每条原样实时送达，无暂存、无温度计、无摘要")
+    void mergeDisabledDeliversImmediately() {
+        var settings = pushSettings("{\"mergeWindow\":\"0\"}");
+
+        for (int i = 0; i < 5; i++) {
+            accept("第" + i, NotificationCategory.INTERACTIVE, settings);
+        }
+
+        assertThat(delivered).hasSize(5);
+        assertThat(delivered).allSatisfy(n -> assertThat(n.id()).isEmpty());
+        assertThat(reducer.overflowSize()).isZero();
+        assertThat(reducer.droppedOverflowCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("合并窗口关闭仍受限流：超出配额的条目进溢出缓冲，不绕过刷屏保护")
+    void mergeDisabledStillRateLimited() {
+        var limited = new NoiseReducer(delivery, clock, 2);
+        var settings = pushSettings("{\"mergeWindow\":\"0\"}");
+
+        for (int i = 0; i < 4; i++) {
+            limited.accept(Judgement.NEW_COMMENT, note("第" + i, NotificationCategory.NORMAL),
+                    settings);
+        }
+
+        assertThat(delivered).hasSize(2);
+        assertThat(limited.overflowSize()).isEqualTo(2);
+        assertThat(limited.droppedOverflowCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("合并窗口关闭取值宽容：0m 与 0 等效")
+    void mergeDisabledAcceptsZeroWithUnit() {
+        assertThat(pushSettings("{\"mergeWindow\":\"0\"}").mergeDisabled()).isTrue();
+        assertThat(pushSettings("{\"mergeWindow\":\"0m\"}").mergeDisabled()).isTrue();
+        assertThat(pushSettings("{\"mergeWindow\":\"1m\"}").mergeDisabled()).isFalse();
+        assertThat(PushSettings.defaults().mergeDisabled()).isFalse();
+    }
+
+    @Test
     @DisplayName("窗口结束时仅 1 条暂存 → 按原样补发，不生成「1 条」摘要")
     void singleHeldIsDeliveredAsIs() {
         var settings = PushSettings.defaults();

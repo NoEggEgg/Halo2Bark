@@ -37,7 +37,7 @@ class NotificationComposerTest {
     }
 
     @Test
-    @DisplayName("新评论：标题附主体类型；正文首行「谁 · 何时」；HTML 标签被清除")
+    @DisplayName("新评论：标题附主体类型；正文首行「谁」；HTML 标签被清除")
     void newComment() {
         givenSubject("文章标题", "https://site/archives/p-1", "文章");
 
@@ -53,6 +53,18 @@ class NotificationComposerTest {
         assertThat(notification.body().lines().findFirst().orElse("")).contains("Bob");
         assertThat(notification.category()).isEqualTo(NotificationCategory.INTERACTIVE);
         assertThat(notification.archive()).isTrue();
+    }
+
+    @Test
+    @DisplayName("正文首行不含绝对时间：横幅与归档自带到达时间，不挤占内容预算")
+    void bodyFirstLineOmitsAbsoluteTime() {
+        givenSubject("文章标题", "https://site/archives/p-1", "文章");
+
+        var notification = composer.compose(new SiteEvent.CommentCreated("c", null, "User", "bob",
+                "Bob", "你好", false, COMMENTED_AT), Judgement.NEW_COMMENT, 0);
+
+        var firstLine = notification.body().lines().findFirst().orElse("");
+        assertThat(firstLine).isEqualTo("Bob").doesNotContain("月").doesNotContain(":");
     }
 
     @Test
@@ -115,7 +127,7 @@ class NotificationComposerTest {
         var notification = composer.compose(new SiteEvent.CommentCreated("c", null, "User", "bob",
                 "Bob", "内容", false, COMMENTED_AT), Judgement.NEW_COMMENT, 0);
 
-        assertThat(notification.body()).startsWith("Bob · ").contains("\n\n内容");
+        assertThat(notification.body()).startsWith("Bob").contains("\n\n内容");
     }
 
     @Test
@@ -185,6 +197,47 @@ class NotificationComposerTest {
     }
 
     @Test
+    @DisplayName("文章发布正文带摘要，超长时优雅截断")
+    void postPublishedCarriesExcerpt() {
+        when(resolver.resolve(any())).thenReturn(
+                new ResolvedSubject("文章标题", "https://site/archives/p-1", "", "",
+                        "这是文章摘要，介绍全文大意。"));
+
+        var notification = composer.compose(
+                new SiteEvent.PostChanged("p-1", SiteEvent.PostChange.PUBLISHED),
+                Judgement.POST_PUBLISHED, 200);
+
+        assertThat(notification.body()).isEqualTo("这是文章摘要，介绍全文大意。");
+    }
+
+    @Test
+    @DisplayName("文章删除 / 取消发布正文不带摘要（摘要属于发布场景）")
+    void postRemovedBodyStaysEmpty() {
+        when(resolver.resolve(any())).thenReturn(
+                new ResolvedSubject("文章标题", "https://site/archives/p-1", "", "",
+                        "这是文章摘要。"));
+
+        var notification = composer.compose(
+                new SiteEvent.PostChanged("p-1", SiteEvent.PostChange.DELETED),
+                Judgement.POST_REMOVED, 200);
+
+        assertThat(notification.body()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("无摘要时发布通知正文为空，仅标题与封面")
+    void postPublishedWithoutExcerptKeepsEmptyBody() {
+        givenSubject("文章标题", "https://site/archives/p-1", "");
+
+        var notification = composer.compose(
+                new SiteEvent.PostChanged("p-1", SiteEvent.PostChange.PUBLISHED),
+                Judgement.POST_PUBLISHED, 200);
+
+        assertThat(notification.body()).isEmpty();
+        assertThat(notification.subtitle()).isEqualTo("文章标题");
+    }
+
+    @Test
     @DisplayName("设备事件为安全类，正文含账号 / IP / 平台")
     void deviceLogin() {
         givenSubject("", "https://site/console/users", "");
@@ -196,6 +249,30 @@ class NotificationComposerTest {
         assertThat(notification.category()).isEqualTo(NotificationCategory.SECURITY);
         assertThat(notification.body()).contains("账号：admin").contains("IP：203.0.113.7")
                 .contains("iOS · Safari");
+    }
+
+    @Test
+    @DisplayName("登录账号的头像作为逐条图标，与其他事件一致")
+    void deviceLoginCarriesAccountAvatar() {
+        givenSubject("", "https://site/console/users", "");
+        when(authorResolver.avatarUrl("User", "admin")).thenReturn("https://site/upload/admin.png");
+
+        var notification = composer.compose(new SiteEvent.DeviceCreated("d", "admin", "203.0.113.7",
+                "iOS", "Safari", null, null), Judgement.DEVICE_LOGIN, 0);
+
+        assertThat(notification.icon()).isEqualTo("https://site/upload/admin.png");
+    }
+
+    @Test
+    @DisplayName("登录账号无头像时图标留空，回退全局图标")
+    void deviceLoginWithoutAvatarFallsBack() {
+        givenSubject("", "https://site/console/users", "");
+        when(authorResolver.avatarUrl("User", "admin")).thenReturn("");
+
+        var notification = composer.compose(new SiteEvent.DeviceCreated("d", "admin", "203.0.113.7",
+                "iOS", "Safari", null, null), Judgement.DEVICE_LOGIN, 0);
+
+        assertThat(notification.icon()).isEmpty();
     }
 
     @Test
@@ -359,7 +436,7 @@ class NotificationComposerTest {
         var reply = composer.compose(new SiteEvent.ReplyCreated("r", "c-1", "User", "bob",
                 "Bob", "公开内容", null, COMMENTED_AT), Judgement.NEW_REPLY, 0);
 
-        assertThat(comment.body()).doesNotContain("私密").startsWith("Bob · ");
+        assertThat(comment.body()).doesNotContain("私密").startsWith("Bob");
         assertThat(reply.body()).doesNotContain("私密");
     }
 
