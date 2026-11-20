@@ -251,6 +251,62 @@ class NoiseReducerTest {
     }
 
     @Test
+    @DisplayName("温度计激活中停止再启动：登记被清空，下一波爆发仍能触发同 id 温度计")
+    void thermometerResetsOnStopMidBurst() {
+        var settings = PushSettings.defaults();
+        reducer.start();
+        try {
+            // 第一波已进入合并模式，温度计已推送、登记处于激活态
+            accept("一", NotificationCategory.INTERACTIVE, settings);
+            accept("二", NotificationCategory.INTERACTIVE, settings);
+            accept("三", NotificationCategory.INTERACTIVE, settings);
+            assertThat(delivered).hasSize(3);
+            assertThat(delivered.get(2).title()).isEqualTo("🔥 评论爆发中");
+
+            // 爆发进行中停用：登记清空、暂存丢弃（设计如此，停机不补发）
+            reducer.stop();
+            delivered.clear();
+
+            // 重启后新一波：若登记未清空会被误判为「本波已推过温度计」而永远不推
+            reducer.start();
+            accept("一2", NotificationCategory.INTERACTIVE, settings);
+            accept("二2", NotificationCategory.INTERACTIVE, settings);
+            accept("三2", NotificationCategory.INTERACTIVE, settings);
+
+            assertThat(delivered).hasSize(3);
+            assertThat(delivered.get(2).title()).isEqualTo("🔥 评论爆发中");
+            assertThat(delivered.get(2).id()).isEqualTo("halo2bark-burst-new_comment");
+        } finally {
+            reducer.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("新实例（模拟进程重启）的温度计 id 与旧实例一致，手机端仍原地替换而非堆积")
+    void burstIdSurvivesProcessRestart() {
+        var settings = PushSettings.defaults();
+        // 旧实例推出温度计
+        accept("一", NotificationCategory.INTERACTIVE, settings);
+        accept("二", NotificationCategory.INTERACTIVE, settings);
+        accept("三", NotificationCategory.INTERACTIVE, settings);
+        var before = delivered.get(2).id();
+
+        // 全新实例：内存登记全丢，但 id 是纯静态函数，跨进程稳定
+        var freshDelivered = new ArrayList<PushNotification>();
+        var fresh = new NoiseReducer((notification, s, devices) -> {
+            freshDelivered.add(notification);
+            return DeliveryReport.empty();
+        }, clock);
+        fresh.accept(Judgement.NEW_COMMENT, note("一", NotificationCategory.INTERACTIVE), settings);
+        fresh.accept(Judgement.NEW_COMMENT, note("二", NotificationCategory.INTERACTIVE), settings);
+        fresh.accept(Judgement.NEW_COMMENT, note("三", NotificationCategory.INTERACTIVE), settings);
+
+        assertThat(freshDelivered).hasSize(3);
+        assertThat(freshDelivered.get(2).title()).isEqualTo("🔥 评论爆发中");
+        assertThat(freshDelivered.get(2).id()).isEqualTo(before);
+    }
+
+    @Test
     @DisplayName("窗口到期但冲刷未跑到时提交，暂存的条目不会被新窗口覆盖丢失")
     void submitAfterWindowExpiryDoesNotLoseHeldItems() {
         var settings = PushSettings.defaults();
