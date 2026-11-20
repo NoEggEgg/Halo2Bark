@@ -20,6 +20,8 @@ import run.halo.app.core.extension.content.Reply;
 import run.halo.app.event.post.PostDeletedEvent;
 import run.halo.app.event.post.PostPublishedEvent;
 import run.halo.app.event.post.PostUnpublishedEvent;
+import run.halo.app.event.post.PostVisibleChangedEvent;
+import run.halo.app.event.user.UserLoginEvent;
 import run.halo.app.extension.ExtensionClient;
 import run.halo.app.extension.Metadata;
 import run.halo.app.extension.Ref;
@@ -222,6 +224,41 @@ class CollectorTest {
         assertThat(result.reEnqueue()).isTrue();
         assertThat(result.retryAfter()).isNotNull();
         assertThat(result.retryAfter().getSeconds()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("账号登录 → 登录事件（携带用户名与显示名，不含邮箱）")
+    void projectsUserLoggedIn() {
+        var user = new User();
+        var metadata = new Metadata();
+        metadata.setName("admin");
+        user.setMetadata(metadata);
+        var userSpec = new User.UserSpec();
+        userSpec.setDisplayName("站点管理员");
+        user.setSpec(userSpec);
+
+        new UserLoginEventListener(dispatcher).onLogin(new UserLoginEvent(this, user));
+
+        verify(dispatcher).submit(new SiteEvent.UserLoggedIn("admin", "站点管理员"));
+    }
+
+    @Test
+    @DisplayName("账号登录事件缺字段时仍可采集；监听器异常不外抛")
+    void userLoggedInWithoutUserIsIgnored() {
+        new UserLoginEventListener(dispatcher).onLogin(new UserLoginEvent(this, null));
+        verify(dispatcher, never()).submit(any());
+    }
+
+    @Test
+    @DisplayName("文章可见性变更 → 携带「原值 → 新值」详情")
+    void projectsPostVisibilityChanged() {
+        var listener = new PostEventListener(dispatcher);
+
+        listener.onVisibleChanged(new PostVisibleChangedEvent(this, "p-7",
+                Post.VisibleEnum.PUBLIC, Post.VisibleEnum.PRIVATE));
+
+        verify(dispatcher).submit(new SiteEvent.PostChanged("p-7",
+                SiteEvent.PostChange.VISIBILITY_CHANGED, "", "", "公开 → 私密"));
     }
 
     @Test

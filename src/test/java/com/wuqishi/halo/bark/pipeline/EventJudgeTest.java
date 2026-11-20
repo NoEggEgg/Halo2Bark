@@ -405,4 +405,14 @@ class EventJudgeTest {
         assertThat(judge.judge(new SiteEvent.DeviceCreated("d", null, null, null, null, null, null)))
                 .contains(Judgement.DEVICE_LOGIN);
     }
+
+    @Test
+    @DisplayName("账号登录与文章可见性变更的判定")
+    void loginAndVisibilityJudgements() {
+        assertThat(judge.judge(new SiteEvent.UserLoggedIn("admin", "管理员")))
+                .contains(Judgement.USER_LOGGED_IN);
+        assertThat(judge.judge(new SiteEvent.PostChanged("p",
+                SiteEvent.PostChange.VISIBILITY_CHANGED, "", "", "公开 → 私密")))
+                .contains(Judgement.POST_VISIBILITY_CHANGED);
+    }
 }

@@ -75,6 +75,22 @@ class SummaryComposerTest {
     }
 
     @Test
+    @DisplayName("合并摘要：账号登录与可见性变更各有专属标题")
+    void mergedNewEventTitles() {
+        var logins = List.of(
+                item(Judgement.USER_LOGGED_IN, "", "一", ""),
+                item(Judgement.USER_LOGGED_IN, "", "二", ""));
+        var visibility = List.of(
+                item(Judgement.POST_VISIBILITY_CHANGED, "", "一", ""),
+                item(Judgement.POST_VISIBILITY_CHANGED, "", "二", ""));
+
+        assertThat(SummaryComposer.merged(Judgement.USER_LOGGED_IN, logins, 0, null).title())
+                .isEqualTo("🔐 2 次账号登录");
+        assertThat(SummaryComposer.merged(Judgement.POST_VISIBILITY_CHANGED, visibility, 0, null).title())
+                .isEqualTo("👁️ 2 篇文章可见性变更");
+    }
+
+    @Test
     @DisplayName("限流摘要：标题为 PRD 原文，正文按事件类型归纳")
     void overflowBreaksDownByType() {
         var items = List.of(

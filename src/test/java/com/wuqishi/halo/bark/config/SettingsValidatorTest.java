@@ -114,6 +114,8 @@ class SettingsValidatorTest {
             assertThat(events.commentPendingEnabled()).isTrue();
             assertThat(events.replyPendingEnabled()).isTrue();
             assertThat(events.newDeviceLoginEnabled()).isTrue();
+            assertThat(events.userLoggedInEnabled()).isTrue();
+            assertThat(events.postVisibilityEnabled()).isFalse();
             assertThat(events.postPublishedEnabled()).isFalse();
             assertThat(events.userRegisteredEnabled()).isFalse();
             assertThat(events.postRemovedEnabled()).isFalse();

@@ -139,6 +139,30 @@ class EventPipelineTest {
     }
 
     @Test
+    @DisplayName("账号登录开关默认开启 → 交给降噪层")
+    void handsOverUserLoggedInByDefault() {
+        when(judge.judge(any())).thenReturn(Optional.of(Judgement.USER_LOGGED_IN));
+
+        pipeline.process(event("c-1"), allEnabled());
+
+        verify(noiseReducer).accept(eq(Judgement.USER_LOGGED_IN), any(), any());
+    }
+
+    @Test
+    @DisplayName("文章可见性变更：默认关闭不投递，显式开启后投递")
+    void visibilityToggleControlsDelivery() {
+        when(judge.judge(any())).thenReturn(Optional.of(Judgement.POST_VISIBILITY_CHANGED));
+
+        pipeline.process(event("c-1"), allEnabled());
+        verify(noiseReducer, never()).accept(any(), any(), any());
+
+        var enabled = new BarkSettings(PushSettings.defaults(),
+                new EventToggles(true, true, true, true, true, true, true, true, true, true));
+        pipeline.process(event("c-2"), enabled);
+        verify(noiseReducer).accept(eq(Judgement.POST_VISIBILITY_CHANGED), any(), any());
+    }
+
+    @Test
     @DisplayName("窗口内重复事件只交给降噪层一次")
     void deduplicatesWithinWindow() {
         when(judge.judge(any())).thenReturn(Optional.of(Judgement.NEW_COMMENT));

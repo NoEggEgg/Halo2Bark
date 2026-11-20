@@ -102,6 +102,7 @@ public class RecentEventDeduplicator {
             case SiteEvent.CommentCreated e -> "comment:" + e.commentName();
             case SiteEvent.ReplyCreated e -> "reply:" + e.replyName();
             case SiteEvent.PostChanged e -> "post:" + e.postName() + ":" + postBucket(e.change());
+            case SiteEvent.UserLoggedIn e -> "login:" + e.username();
             case SiteEvent.UserCreated e -> "user:" + e.username();
             case SiteEvent.DeviceCreated e -> "device:" + e.deviceName();
         };

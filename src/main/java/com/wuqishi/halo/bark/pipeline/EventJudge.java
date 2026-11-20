@@ -52,8 +52,12 @@ public class EventJudge {
         return switch (event) {
             case SiteEvent.CommentCreated e -> judgeComment(e);
             case SiteEvent.ReplyCreated e -> judgeReply(e);
-            case SiteEvent.PostChanged e -> Optional.of(e.change() == SiteEvent.PostChange.PUBLISHED
-                    ? Judgement.POST_PUBLISHED : Judgement.POST_REMOVED);
+            case SiteEvent.PostChanged e -> Optional.of(switch (e.change()) {
+                case PUBLISHED -> Judgement.POST_PUBLISHED;
+                case VISIBILITY_CHANGED -> Judgement.POST_VISIBILITY_CHANGED;
+                default -> Judgement.POST_REMOVED;
+            });
+            case SiteEvent.UserLoggedIn e -> Optional.of(Judgement.USER_LOGGED_IN);
             case SiteEvent.UserCreated e -> Optional.of(Judgement.USER_REGISTERED);
             case SiteEvent.DeviceCreated e -> Optional.of(Judgement.DEVICE_LOGIN);
         };

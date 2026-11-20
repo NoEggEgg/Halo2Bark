@@ -177,11 +177,32 @@ class HaloSubjectResolverTest {
     }
 
     @Test
-    @DisplayName("用户 / 设备事件跳转 Console 用户管理页")
+    @DisplayName("用户 / 设备 / 账号登录事件跳转 Console 用户管理页")
     void userConsolePath() {
-        var resolved = resolver.resolve(
-                new SiteEvent.DeviceCreated("d", null, null, null, null, null, null));
-        assertThat(resolved.url()).isEqualTo("https://site/console/users");
+        assertThat(resolver.resolve(
+                new SiteEvent.DeviceCreated("d", null, null, null, null, null, null)).url())
+                .isEqualTo("https://site/console/users");
+        assertThat(resolver.resolve(new SiteEvent.UserLoggedIn("admin", "管理员")).url())
+                .isEqualTo("https://site/console/users");
+    }
+
+    @Test
+    @DisplayName("文章可见性变更：标题与链接走文章重查路径")
+    void visibilityChangedUsesPostSubject() {
+        var post = new Post();
+        var spec = new Post.PostSpec();
+        spec.setTitle("可见性测试文章");
+        post.setSpec(spec);
+        var status = new Post.PostStatus();
+        status.setPermalink("/archives/visibility");
+        post.setStatus(status);
+        when(client.fetch(Post.class, "p-8")).thenReturn(Optional.of(post));
+
+        var resolved = resolver.resolve(new SiteEvent.PostChanged("p-8",
+                SiteEvent.PostChange.VISIBILITY_CHANGED, "", "", "公开 → 私密"));
+
+        assertThat(resolved.title()).isEqualTo("可见性测试文章");
+        assertThat(resolved.url()).isEqualTo("https://site/archives/visibility");
     }
 
     @Test

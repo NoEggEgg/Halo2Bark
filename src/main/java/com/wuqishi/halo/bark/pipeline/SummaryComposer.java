@@ -20,15 +20,17 @@ import java.util.stream.Collectors;
 final class SummaryComposer {
 
     /** 合并摘要标题模板（按判定语义），{@code %d} 为条数。 */
-    private static final Map<Judgement, String> MERGE_TITLES = Map.of(
-            Judgement.NEW_COMMENT, "💬 %d 条新评论",
-            Judgement.PENDING_COMMENT, "🕓 %d 条评论待审核",
-            Judgement.NEW_REPLY, "↩️ %d 条新回复",
-            Judgement.PENDING_REPLY, "🕓 %d 条回复待审核",
-            Judgement.POST_PUBLISHED, "📝 %d 篇文章已发布",
-            Judgement.POST_REMOVED, "🗑️ %d 篇文章被删除或取消发布",
-            Judgement.USER_REGISTERED, "👤 %d 位新用户注册",
-            Judgement.DEVICE_LOGIN, "🔐 %d 次新设备登录");
+    private static final Map<Judgement, String> MERGE_TITLES = Map.ofEntries(
+            Map.entry(Judgement.NEW_COMMENT, "💬 %d 条新评论"),
+            Map.entry(Judgement.PENDING_COMMENT, "🕓 %d 条评论待审核"),
+            Map.entry(Judgement.NEW_REPLY, "↩️ %d 条新回复"),
+            Map.entry(Judgement.PENDING_REPLY, "🕓 %d 条回复待审核"),
+            Map.entry(Judgement.POST_PUBLISHED, "📝 %d 篇文章已发布"),
+            Map.entry(Judgement.POST_REMOVED, "🗑️ %d 篇文章被删除或取消发布"),
+            Map.entry(Judgement.USER_REGISTERED, "👤 %d 位新用户注册"),
+            Map.entry(Judgement.DEVICE_LOGIN, "🔐 %d 次新设备登录"),
+            Map.entry(Judgement.USER_LOGGED_IN, "🔐 %d 次账号登录"),
+            Map.entry(Judgement.POST_VISIBILITY_CHANGED, "👁️ %d 篇文章可见性变更"));
 
     private static final String OVERFLOW_TITLE = "🔔 近 1 分钟另有 %d 条通知已合并";
     private static final String QUIET_TITLE = "🌙 免打扰期间收到 %d 条通知";

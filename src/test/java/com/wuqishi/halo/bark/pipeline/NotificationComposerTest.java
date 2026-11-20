@@ -289,6 +289,37 @@ class NotificationComposerTest {
     }
 
     @Test
+    @DisplayName("账号登录：安全类，正文含显示名与登录时间，头像来自用户账号")
+    void userLoggedIn() {
+        givenSubject("", "https://site/console/users", "");
+        when(authorResolver.avatarUrl("User", "admin")).thenReturn("https://site/upload/admin.png");
+
+        var notification = composer.compose(new SiteEvent.UserLoggedIn("admin", "站点管理员"),
+                Judgement.USER_LOGGED_IN, 0);
+
+        assertThat(notification.title()).isEqualTo("🔐 账号登录");
+        assertThat(notification.category()).isEqualTo(NotificationCategory.SECURITY);
+        assertThat(notification.body()).contains("站点管理员").contains("登录成功");
+        assertThat(notification.icon()).isEqualTo("https://site/upload/admin.png");
+    }
+
+    @Test
+    @DisplayName("文章可见性变更：标题与正文显示「原值 → 新值」，链接跳文章页")
+    void postVisibilityChanged() {
+        givenSubject("文章标题", "https://site/archives/p-1", "");
+
+        var notification = composer.compose(new SiteEvent.PostChanged("p-1",
+                SiteEvent.PostChange.VISIBILITY_CHANGED, "", "", "公开 → 私密"),
+                Judgement.POST_VISIBILITY_CHANGED, 0);
+
+        assertThat(notification.title()).isEqualTo("👁️ 文章可见性已变更");
+        assertThat(notification.subtitle()).isEqualTo("文章标题");
+        assertThat(notification.body()).isEqualTo("公开 → 私密");
+        assertThat(notification.url()).isEqualTo("https://site/archives/p-1");
+        assertThat(notification.category()).isEqualTo(NotificationCategory.NORMAL);
+    }
+
+    @Test
     @DisplayName("评论配图为站内相对路径时经绝对化变为可下载的外部地址")
     void commentImageIsExternalized() {
         givenSubject("文章标题", "https://site/archives/p-1", "文章");

@@ -84,6 +84,7 @@ public class HaloSubjectResolver implements SubjectResolver {
                 anchorToComment(fromSubjectRef(e.subjectRef()), e.commentName(), null);
             case SiteEvent.ReplyCreated e ->
                 anchorToComment(fromParentComment(e.commentName()), e.commentName(), e.replyName());
+            case SiteEvent.UserLoggedIn e -> new ResolvedSubject("", USER_CONSOLE_PATH);
             case SiteEvent.UserCreated e -> new ResolvedSubject("", USER_CONSOLE_PATH);
             case SiteEvent.DeviceCreated e -> new ResolvedSubject("", USER_CONSOLE_PATH);
         };

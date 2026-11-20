@@ -331,6 +331,18 @@ spec:
           value: true
           help: 有新设备登录站点账号时通知。安全事件，固定「重要警告」级别，忽略静音与免打扰，且不受静默时段影响
         - $formkit: checkbox
+          name: userLoggedInEnabled
+          id: userLoggedInEnabled
+          label: 账号登录
+          value: true
+          help: 已存在设备再次登录时通知（新设备登录由上面的开关覆盖）。安全事件，忽略静音与免打扰。需要 Halo 2.27 及以上
+        - $formkit: checkbox
+          name: postVisibilityEnabled
+          id: postVisibilityEnabled
+          label: 文章可见性变更
+          value: false
+          help: 文章在公开 / 内部 / 私密之间切换时通知，正文显示「原值 → 新值」。需要 Halo 2.27 及以上
+        - $formkit: checkbox
           name: postPublishedEnabled
           id: postPublishedEnabled
           label: 文章发布

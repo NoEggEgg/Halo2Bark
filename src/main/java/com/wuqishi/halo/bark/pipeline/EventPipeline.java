@@ -140,6 +140,8 @@ public class EventPipeline implements NotificationPipeline {
             case POST_REMOVED -> Boolean.TRUE.equals(events.postRemovedEnabled());
             case USER_REGISTERED -> Boolean.TRUE.equals(events.userRegisteredEnabled());
             case DEVICE_LOGIN -> Boolean.TRUE.equals(events.newDeviceLoginEnabled());
+            case USER_LOGGED_IN -> Boolean.TRUE.equals(events.userLoggedInEnabled());
+            case POST_VISIBILITY_CHANGED -> Boolean.TRUE.equals(events.postVisibilityEnabled());
         };
     }
 }

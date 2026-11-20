@@ -130,15 +130,20 @@ public class NotificationComposer {
                         imageOf(e.content()));
             }
             case SiteEvent.PostChanged e -> {
-                // 删除/取消发布的文章原链接已是死链，点击直达回收站；发布事件仍跳文章页
+                // 删除/取消发布的文章原链接已是死链，点击直达回收站；发布与可见性变更仍跳文章页
                 var published = e.change() == SiteEvent.PostChange.PUBLISHED;
-                var url = published ? subject.url() : processLink(CONSOLE_DELETED_POSTS_URL);
+                var visibility = e.change() == SiteEvent.PostChange.VISIBILITY_CHANGED;
+                var url = published || visibility
+                        ? subject.url() : processLink(CONSOLE_DELETED_POSTS_URL);
                 // 发布通知正文带文章摘要（status.excerpt / 自定义摘要），经 toMarkdown 防
                 // 自定义摘要里粘进 HTML 标签；无摘要时正文为空，仅标题 + 封面配图
                 var body = published ? truncate(HtmlText.toMarkdown(subject.excerpt()),
-                        contentMaxLength) : "";
+                        contentMaxLength)
+                        : visibility ? truncate(e.visibilityDetail(), contentMaxLength) : "";
+                var title = published ? "📝 文章已发布"
+                        : visibility ? "👁️ 文章可见性已变更" : "🗑️ 文章已删除或取消发布";
                 yield new PushNotification(
-                        published ? "📝 文章已发布" : "🗑️ 文章已删除或取消发布",
+                        title,
                         subject.title(),
                         body,
                         url,
@@ -147,6 +152,15 @@ public class NotificationComposer {
                         "",
                         subject.image());
             }
+            case SiteEvent.UserLoggedIn e -> new PushNotification(
+                    "🔐 账号登录",
+                    "",
+                    truncate(loginBody(e), contentMaxLength),
+                    subject.url(),
+                    NotificationCategory.SECURITY,
+                    true,
+                    icon(avatar("User", e.username())),
+                    "");
             case SiteEvent.UserCreated e -> new PushNotification(
                     "👤 新用户注册",
                     "",
@@ -246,6 +260,14 @@ public class NotificationComposer {
             return displayName;
         }
         return name == null ? "" : name;
+    }
+
+    /** 账号登录正文：显示名 + 当前时间；事件本身不带时间，采集/投递紧接着登录发生。 */
+    private static String loginBody(SiteEvent.UserLoggedIn user) {
+        var who = user.displayName() == null || user.displayName().isBlank()
+                ? user.username() : user.displayName();
+        var when = TIME_FORMAT.format(java.time.Instant.now());
+        return (who == null || who.isBlank() ? "登录成功" : who + " · 登录成功") + "\n" + when;
     }
 
     private static String userBody(SiteEvent.UserCreated user) {

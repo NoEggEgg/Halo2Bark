@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 import run.halo.app.event.post.PostDeletedEvent;
 import run.halo.app.event.post.PostPublishedEvent;
 import run.halo.app.event.post.PostUnpublishedEvent;
+import run.halo.app.event.post.PostVisibleChangedEvent;
 
 /**
  * 文章类事件采集器，覆盖 PRD 4.1 的「文章发布」与「文章删除 / 取消发布」。
@@ -53,6 +54,32 @@ public class PostEventListener {
     @EventListener
     public void onUnpublished(PostUnpublishedEvent event) {
         dispatch(event.getName(), SiteEvent.PostChange.UNPUBLISHED);
+    }
+
+    @EventListener
+    public void onVisibleChanged(PostVisibleChangedEvent event) {
+        // 文章可见性变更（公开 ↔ 私密）是运营关键动作；Halo 只给文章名，标题/链接走重查
+        var oldVisible = labelOf(event.getOldVisible());
+        var newVisible = labelOf(event.getNewVisible());
+        var detail = oldVisible + " → " + newVisible;
+        try {
+            dispatcher.submit(new SiteEvent.PostChanged(event.getName(),
+                    SiteEvent.PostChange.VISIBILITY_CHANGED, "", "", detail));
+        } catch (RuntimeException e) {
+            log.warn("{} 采集文章可见性变更失败：{}", BarkConstants.LOG_PREFIX,
+                    Masking.sanitize(e.toString()));
+        }
+    }
+
+    private static String labelOf(run.halo.app.core.extension.content.Post.VisibleEnum visible) {
+        if (visible == null) {
+            return "(未知)";
+        }
+        return switch (visible) {
+            case PUBLIC -> "公开";
+            case INTERNAL -> "内部";
+            case PRIVATE -> "私密";
+        };
     }
 
     private void dispatch(String postName, SiteEvent.PostChange change) {

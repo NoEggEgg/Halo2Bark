@@ -29,5 +29,11 @@ public enum Judgement {
     USER_REGISTERED,
 
     /** 新设备登录（安全类） */
-    DEVICE_LOGIN
+    DEVICE_LOGIN,
+
+    /** 账号登录（安全类；已存在设备再次登录） */
+    USER_LOGGED_IN,
+
+    /** 文章可见性变更（公开 ↔ 私密） */
+    POST_VISIBILITY_CHANGED
 }

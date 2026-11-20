@@ -38,7 +38,9 @@ public sealed interface SiteEvent {
         /** 删除 */
         DELETED,
         /** 取消发布 */
-        UNPUBLISHED
+        UNPUBLISHED,
+        /** 可见性变更（公开 ↔ 私密），Halo 2.27 起由 {@code PostVisibleChangedEvent} 广播 */
+        VISIBILITY_CHANGED
     }
 
     /**
@@ -140,18 +142,48 @@ public sealed interface SiteEvent {
      * @param change 变更类型
      * @param title 文章标题（删除事件由采集层携带，其余为空）
      * @param url 文章链接（删除事件由采集层携带，其余为空）
+     * @param visibilityDetail 可见性变更详情（如「公开 → 私密」）；仅可见性变更事件携带
      */
-    record PostChanged(String postName, PostChange change, String title, String url)
-            implements SiteEvent {
+    record PostChanged(String postName, PostChange change, String title, String url,
+            String visibilityDetail) implements SiteEvent {
 
-        /** 发布 / 取消发布：Halo 仅给文章名，标题与链接留空，交由投递线程重查。 */
+        /** 发布 / 取消发布 / 删除：Halo 仅给文章名，标题与链接留空，交由投递线程重查。 */
         public PostChanged(String postName, PostChange change) {
-            this(postName, change, "", "");
+            this(postName, change, "", "", "");
+        }
+
+        /** 删除事件：由采集层携带标题与链接快照。 */
+        public PostChanged(String postName, PostChange change, String title, String url) {
+            this(postName, change, title, url, "");
         }
 
         @Override
         public NotificationCategory category() {
             return NotificationCategory.NORMAL;
+        }
+    }
+
+    /**
+     * 账号登录（安全事件）。
+     *
+     * <p>与 {@link DeviceCreated} 的区别：本事件覆盖**已存在设备再次登录**——Halo 只在创建
+     * 新设备时产生 {@code Device} 扩展对象，老设备登录只更新对象，不会触发 DeviceReconciler。
+     * 采集自 Halo 2.27 起广播的 {@code UserLoginEvent}（{@code @SharedEvent}）。
+     *
+     * @param username 用户对象名
+     * @param displayName 显示名
+     */
+    record UserLoggedIn(String username, String displayName) implements SiteEvent {
+
+        @Override
+        public NotificationCategory category() {
+            return NotificationCategory.SECURITY;
+        }
+
+        /** **安全**：账号名可能含邮箱，不输出。 */
+        @Override
+        public String toString() {
+            return "UserLoggedIn[]";
         }
     }
 
